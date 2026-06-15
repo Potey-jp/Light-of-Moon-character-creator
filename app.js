@@ -520,6 +520,9 @@ function officialWeapon(category, rank, name, weight, type, power, hit, range, c
   return {
     id: `weapon-${category}-${rank}-${name}`,
     name,
+    category,
+    rank,
+    effect: effect || '',
     description: `${category} / ${rank}ランク`,
     meta: [`分類:${category}`, `重量:${weight}`, `属性:${type}`, `威力:${power}`, `命中:${hit}`, `射程:${range}`, costText],
     row: {
@@ -1878,6 +1881,81 @@ function renderOfficialPassiveCatalog() {
   `).join('');
 }
 
+function renderPurchaseItem(group, entry) {
+  const effect = entry.effect || '';
+  return `
+    <section class="purchase-item">
+      <div>
+        <h3>${escapeHtml(entry.name)}</h3>
+        <p>${escapeHtml(entry.description)}</p>
+        ${effect ? `<p class="purchase-effect"><strong>特殊効果</strong>${escapeHtml(effect)}</p>` : ''}
+      </div>
+      <div class="purchase-meta">
+        ${(entry.meta || []).map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
+      </div>
+      <button type="button" class="primary small" data-purchase-id="${escapeHtml(`${group.id}:${entry.id}`)}">購入</button>
+    </section>
+  `;
+}
+
+function renderWeaponCatalogGroup(group) {
+  const categories = Array.from(new Map(group.entries.map((entry) => [entry.category || 'その他', entry.category || 'その他'])).values());
+  return `
+    <div class="purchase-subgroups weapon-catalog-subgroups">
+      ${categories.map((category) => {
+        const entries = group.entries.filter((entry) => (entry.category || 'その他') === category);
+        return `
+          <details class="purchase-subgroup">
+            <summary>
+              <strong>${escapeHtml(category)}</strong>
+              <span>${entries.length}件</span>
+            </summary>
+            <div class="purchase-list weapon-purchase-list">
+              ${entries.map((entry) => renderPurchaseItem(group, entry)).join('')}
+            </div>
+          </details>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderArmorCatalogGroup(group) {
+  const armorGroups = [
+    { label: '斬撃', fields: ['slash', 'slashPanic'] },
+    { label: '貫通', fields: ['pierce', 'piercePanic'] },
+    { label: '打撃', fields: ['blunt', 'bluntPanic'] }
+  ];
+  return `
+    <div class="purchase-subgroups armor-catalog-subgroups">
+      ${armorGroups.map((armorGroup) => {
+        const entries = group.entries.filter((entry) => armorGroup.fields.includes(entry.targetField));
+        return `
+          <details class="purchase-subgroup">
+            <summary>
+              <strong>${escapeHtml(armorGroup.label)}</strong>
+              <span>物理耐性と混乱耐性</span>
+            </summary>
+            <div class="purchase-list armor-purchase-list">
+              ${entries.map((entry) => renderPurchaseItem(group, entry)).join('')}
+            </div>
+          </details>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderDefaultCatalogGroup(group) {
+  return `<div class="purchase-list">${group.entries.map((entry) => renderPurchaseItem(group, entry)).join('')}</div>`;
+}
+
+function renderEquipmentCatalogGroupBody(group) {
+  if (group.id === 'weapons') return renderWeaponCatalogGroup(group);
+  if (group.id === 'armors') return renderArmorCatalogGroup(group);
+  return renderDefaultCatalogGroup(group);
+}
+
 function renderEquipmentCatalog() {
   const root = $('#equipmentCatalog');
   if (!root) return;
@@ -1887,21 +1965,7 @@ function renderEquipmentCatalog() {
         <strong>${escapeHtml(group.label)}</strong>
         <span>${escapeHtml(group.note)}</span>
       </summary>
-      <div class="purchase-list">
-        ${group.entries.map((entry) => `
-          <section class="purchase-item">
-            <div>
-              <h3>${escapeHtml(entry.name)}</h3>
-              <p>${escapeHtml(entry.description)}</p>
-              ${group.id === 'items' && entry.effect ? `<p class="purchase-effect"><strong>効果</strong>${escapeHtml(entry.effect)}</p>` : ''}
-            </div>
-            <div class="purchase-meta">
-              ${(entry.meta || []).map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
-            </div>
-            <button type="button" class="primary small" data-purchase-id="${escapeHtml(`${group.id}:${entry.id}`)}">購入</button>
-          </section>
-        `).join('')}
-      </div>
+      ${renderEquipmentCatalogGroupBody(group)}
     </details>
   `).join('');
 }

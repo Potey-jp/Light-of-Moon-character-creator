@@ -479,6 +479,40 @@ textarea { resize: vertical; line-height: 1.65; }
   font-size: .84rem;
   font-weight: 500;
 }
+.purchase-subgroups {
+  display: grid;
+  gap: 10px;
+  padding: 0 13px 13px;
+}
+.purchase-subgroup {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255,255,255,.025);
+}
+.purchase-subgroup > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-weight: 800;
+}
+.purchase-subgroup > summary span {
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 600;
+}
+.purchase-subgroup .purchase-list {
+  padding: 0 10px 10px;
+}
+.weapon-purchase-list {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.armor-purchase-list {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
 .purchase-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

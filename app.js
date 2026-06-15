@@ -642,7 +642,7 @@ const COMBAT_EFFECT_GROUPS = [
         name: '斬撃',
         note: '斬撃属性の基本攻撃技能。',
         levels: [
-          { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '0', effect: '斬撃属性の基本攻撃を行う。' }
+          { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '1', effect: '斬撃属性の基本攻撃を行う。基礎熟練取得時はコスト0。' }
         ]
       },
       {
@@ -650,7 +650,7 @@ const COMBAT_EFFECT_GROUPS = [
         name: '貫通',
         note: '貫通属性の基本攻撃技能。',
         levels: [
-          { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '0', effect: '貫通属性の基本攻撃を行う。' }
+          { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '1', effect: '貫通属性の基本攻撃を行う。基礎熟練取得時はコスト0。' }
         ]
       },
       {
@@ -658,7 +658,7 @@ const COMBAT_EFFECT_GROUPS = [
         name: '打撃',
         note: '打撃属性の基本攻撃技能。',
         levels: [
-          { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '0', effect: '打撃属性の基本攻撃を行う。' }
+          { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '1', effect: '打撃属性の基本攻撃を行う。基礎熟練取得時はコスト0。' }
         ]
       }
     ]
@@ -684,7 +684,7 @@ const COMBAT_EFFECT_GROUPS = [
         name: 'ダイス追加',
         note: '任意属性のダイスを追加する。追加したダイスはこの戦闘技能を使った速度ダイスにのみ適用される。',
         levels: [
-          { key: 'sl1', label: 'SL1', skill: 0, requirement: '初期習得', lightCost: '0', effect: '任意属性のダイスを1つ追加。全ダイス達成値-2、全ダイス効力値1/2。' },
+          { key: 'sl1', label: 'SL1', skill: 0, requirement: '初期習得', lightCost: '1', effect: '任意属性のダイスを1つ追加。全ダイス達成値-2、全ダイス効力値1/2。基礎熟練取得時はコスト0。' },
           { key: 'sl2', label: 'SL2', skill: 500, requirement: 'レベル2以上', lightCost: '1', effect: '任意属性のダイスを2つ追加。全ダイス達成値-2、全ダイス効力値1/3。' },
           { key: 'sl3', label: 'SL3', skill: 1500, requirement: 'レベル4以上', lightCost: '1', effect: '任意属性のダイスを1つ追加。全ダイス達成値-1、全ダイス効力値1/2。' },
           { key: 'sl4', label: 'SL4', skill: 2000, requirement: 'レベル6以上', lightCost: '2', effect: '任意属性のダイスを2つ追加。全ダイス達成値-1、全ダイス効力値1/3。' },
@@ -931,6 +931,8 @@ const COMBAT_EFFECT_OPTIONS = COMBAT_EFFECT_GROUPS.flatMap((group) => group.effe
 }))));
 
 const COMBAT_EFFECT_OPTION_MAP = Object.fromEntries(COMBAT_EFFECT_OPTIONS.map((option) => [option.optionId, option]));
+const BASIC_SKILL_COST_NAMES = ['斬撃', '貫通', '打撃', 'ダイス追加', '回避', '防御'];
+const BASIC_SKILL_COST_EFFECT_IDS = ['basic-slash', 'basic-pierce', 'basic-blunt', 'dice-add'];
 
 function passiveLevel(sl, skill, requirement, effect) {
   return { key: `sl${sl}`, sl, label: `SL${sl}`, skill, requirement, effect };
@@ -1344,9 +1346,9 @@ const DEFAULT_STATE = {
   },
   skills: {
     combat: [
-      { kind: '基本付与', name: 'ダイス追加', sl: 1, lightCost: '0', pointCost: 0, requirement: '初期習得', effects: [], catalogId: 'dice-add:sl1', catalogEffectId: 'dice-add', memo: '任意属性のダイスを1つ追加。全ダイス達成値-2、全ダイス効力値1/2。' },
-      { kind: '基本スキル', name: '回避', sl: 1, lightCost: '0', pointCost: 0, requirement: '初期習得', effects: [], catalogId: '', catalogEffectId: '', memo: '回避ダイスを使用する基本スキル。' },
-      { kind: '基本スキル', name: '防御', sl: 1, lightCost: '0', pointCost: 0, requirement: '初期習得', effects: [], catalogId: '', catalogEffectId: '', memo: '防御ダイスを使用する基本スキル。' }
+      { kind: '基本付与', name: 'ダイス追加', sl: 1, lightCost: '1', pointCost: 0, requirement: '初期習得', effects: [], catalogId: 'dice-add:sl1', catalogEffectId: 'dice-add', memo: '任意属性のダイスを1つ追加。全ダイス達成値-2、全ダイス効力値1/2。' },
+      { kind: '基本スキル', name: '回避', sl: 1, lightCost: '1', pointCost: 0, requirement: '初期習得', effects: [], catalogId: '', catalogEffectId: '', memo: '回避ダイスを使用する基本スキル。' },
+      { kind: '基本スキル', name: '防御', sl: 1, lightCost: '1', pointCost: 0, requirement: '初期習得', effects: [], catalogId: '', catalogEffectId: '', memo: '防御ダイスを使用する基本スキル。' }
     ],
     passives: []
   },
@@ -1779,16 +1781,22 @@ function renderDynamicTables() {
     `;
   });
 
-  renderRows('skillRows', state.skills.combat, 'skills', (row, index) => `
-    <td><input data-array="skills" data-index="${index}" data-field="kind" value="${escapeHtml(row.kind)}" /></td>
-    <td><input data-array="skills" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
-    <td><input type="number" data-array="skills" data-index="${index}" data-field="sl" value="${row.sl ?? 1}" /></td>
-    <td><input data-array="skills" data-index="${index}" data-field="lightCost" value="${escapeHtml(row.lightCost)}" /></td>
-    <td><input type="number" data-array="skills" data-index="${index}" data-field="pointCost" value="${row.pointCost ?? 0}" /></td>
-    <td><input data-array="skills" data-index="${index}" data-field="requirement" value="${escapeHtml(row.requirement)}" /></td>
-    <td><textarea data-array="skills" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
-    <td><button type="button" class="danger small" data-remove="skills" data-index="${index}">削除</button></td>
-  `);
+  renderRows('skillRows', state.skills.combat, 'skills', (row, index) => {
+    const isBasicCost = isBasicSkillCostTarget(row);
+    const lightCost = getCombatSkillLightCost(row);
+    const readonly = isBasicCost ? ' readonly title="基本スキルの光コストは基礎熟練の有無で自動反映します"' : '';
+    const lightCostClass = isBasicCost ? ' class="readonly-input"' : '';
+    return `
+      <td><input data-array="skills" data-index="${index}" data-field="kind" value="${escapeHtml(row.kind)}" /></td>
+      <td><input data-array="skills" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
+      <td><input type="number" data-array="skills" data-index="${index}" data-field="sl" value="${row.sl ?? 1}" /></td>
+      <td><input data-array="skills" data-index="${index}" data-field="lightCost" value="${escapeHtml(lightCost)}"${readonly}${lightCostClass} /></td>
+      <td><input type="number" data-array="skills" data-index="${index}" data-field="pointCost" value="${row.pointCost ?? 0}" /></td>
+      <td><input data-array="skills" data-index="${index}" data-field="requirement" value="${escapeHtml(row.requirement)}" /></td>
+      <td><textarea data-array="skills" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
+      <td><button type="button" class="danger small" data-remove="skills" data-index="${index}">削除</button></td>
+    `;
+  });
 
   renderRows('passiveRows', state.skills.passives, 'passives', (row, index) => `
     <td><input data-array="passives" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
@@ -2120,6 +2128,25 @@ function normalizeCombatSkillName(name) {
   return String(name || '').replace(/[（）]/g, (ch) => (ch === '（' ? '(' : ')')).replace(/\s+/g, '').trim();
 }
 
+function isBasicSkillCostTarget(row) {
+  const normalizedName = normalizeCombatSkillName(row?.name);
+  return BASIC_SKILL_COST_NAMES.some((name) => normalizeCombatSkillName(name) === normalizedName)
+    || BASIC_SKILL_COST_EFFECT_IDS.includes(row?.catalogEffectId);
+}
+
+function hasBasicTrainingPassive() {
+  return (state.skills.passives || []).some((row) => (
+    row.catalogPassiveId === 'basic-training'
+    || row.catalogPassiveOptionId === 'basic-training:sl1'
+    || normalizeCombatSkillName(row.name) === '基礎熟練'
+  ));
+}
+
+function getCombatSkillLightCost(row) {
+  if (isBasicSkillCostTarget(row)) return hasBasicTrainingPassive() ? '0' : '1';
+  return row.lightCost || '';
+}
+
 function migrateCombatSkillRows(rows) {
   const migrated = [];
   (Array.isArray(rows) ? rows : []).forEach((row) => {
@@ -2247,7 +2274,7 @@ function combatEffectDetail(option) {
 }
 
 function formatCombatSkillLine(row) {
-  return `・【${row.name || '名称未設定'}】SL${row.sl || 1} 技:${getCombatSkillTotalPointCost(row).toLocaleString('ja-JP')} 条:${row.requirement || '-'} コ:${row.lightCost || '-'} 効:${row.memo || '-'}`;
+  return `・【${row.name || '名称未設定'}】SL${row.sl || 1} 技:${getCombatSkillTotalPointCost(row).toLocaleString('ja-JP')} 条:${row.requirement || '-'} コ:${getCombatSkillLightCost(row) || '-'} 効:${row.memo || '-'}`;
 }
 
 function formatPassiveSkillLine(row, options = {}) {

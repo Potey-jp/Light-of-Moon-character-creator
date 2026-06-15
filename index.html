@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LoMTRPG キャラクリシート</title>
+  <meta name="description" content="Light of Moon TRPG向けの非公式キャラクター作成補助ツール。技能点、能力値、Tekey、ココフォリア出力に対応。" />
+  <meta name="theme-color" content="#07080d" />
+  <meta property="og:title" content="LoMTRPG キャラクリシート" />
+  <meta property="og:description" content="Light of Moon TRPG向けの非公式キャラクター作成補助ツール。" />
+  <meta property="og:type" content="website" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Light of Moon TRPG / Character Builder</p>
+        <h1>LoMTRPG キャラクリシート</h1>
+        <p class="lead">出身ダイス、得意分野、副能力値、名声・階級、光の種、装備費用、技能点を自動計算する静的Webツールです。</p>
+      </div>
+      <div class="hero-actions">
+        <span id="accountStatus" class="save-status account-status">未ログイン</span>
+        <span id="saveStatus" class="save-status">未保存</span>
+        <button type="button" id="saveNow" class="ghost">保存</button>
+        <button type="button" id="openLibrary" class="ghost">保存庫</button>
+        <button type="button" id="saveCharacterToLibrary" class="primary">キャラ保存</button>
+        <button type="button" id="jumpTekey" class="primary">外部出力</button>
+        <button type="button" id="exportJson" class="primary">JSON出力</button>
+        <button type="button" id="printSheet" class="ghost">印刷</button>
+      </div>
+    </header>
+
+    <section class="summary-strip" aria-label="自動計算サマリー">
+      <article><span>階級</span><strong id="summaryGrade">9級</strong></article>
+      <article><span>レベル</span><strong id="summaryLevel">1</strong></article>
+      <article><span>HP</span><strong id="summaryHp">0</strong></article>
+      <article><span>MP</span><strong id="summaryMp">0</strong></article>
+      <article><span>光</span><strong id="summaryLight">3</strong></article>
+      <article><span>速度</span><strong id="summarySpeed">1d2</strong></article>
+    </section>
+
+    <nav class="tabs" aria-label="シート項目">
+      <button type="button" class="tab active" data-tab="basic">基本</button>
+      <button type="button" class="tab" data-tab="stats">能力・副能力</button>
+      <button type="button" class="tab" data-tab="enhancement">強化施術</button>
+      <button type="button" class="tab" data-tab="seed">光の種</button>
+      <button type="button" class="tab" data-tab="equipment">装備</button>
+      <button type="button" class="tab" data-tab="equipment-upgrades">装備強化</button>
+      <button type="button" class="tab" data-tab="skills">技能</button>
+      <button type="button" class="tab" data-tab="office">事務所</button>
+      <button type="button" class="tab" data-tab="library">保存庫</button>
+      <button type="button" class="tab" data-tab="output">出力</button>
+    </nav>
+
+    <main>
+      <section id="tab-basic" class="tab-panel active">
+        <div class="grid two">
+          <section class="card">
+            <div class="card-title">
+              <h2>プレイヤーデータ</h2>
+              <span class="hint">いあきゃら風に、各欄を直接編集できます</span>
+            </div>
+            <div class="form-grid">
+              <label>キャラクター名<input id="characterName" class="bind" data-path="profile.characterName" type="text" placeholder="例：ローラン" /></label>
+              <label>PL名<input id="playerName" class="bind" data-path="profile.playerName" type="text" /></label>
+              <label>年齢<input id="age" class="bind" data-path="profile.age" type="text" placeholder="20以上推奨" /></label>
+              <label>性別<input id="gender" class="bind" data-path="profile.gender" type="text" /></label>
+              <label>所属事務所<input id="officeNameShort" class="bind" data-path="office.name" type="text" placeholder="事務所名" /></label>
+              <label>肩書き・役割<input id="role" class="bind" data-path="profile.role" type="text" placeholder="例：9級フィクサー" /></label>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-title">
+              <h2>作成ルール</h2>
+              <span class="hint">出身と得意分野で能力値が変わります</span>
+            </div>
+            <div class="form-grid">
+              <label>出身<select id="origin" class="bind" data-path="build.origin"></select></label>
+              <label>得意分野<select id="specialty" class="bind" data-path="build.specialty"></select></label>
+              <label>選択パッシブ<select id="specialtyPassive" class="bind" data-path="build.specialtyPassive"></select></label>
+              <label>名声点<input id="fame" class="bind" data-path="growth.fame" type="number" min="0" step="1" /></label>
+              <label>初期所持金<input id="cashStart" class="bind" data-path="growth.cashStart" type="number" min="0" step="1000" /></label>
+              <label>初期技能点<input id="skillPointStart" class="bind" data-path="growth.skillPointStart" type="number" min="0" step="10" /></label>
+            </div>
+            <div id="selectedSpecialtyPassiveEffect" class="selected-passive passive-effect"></div>
+            <div class="button-row">
+              <button type="button" id="rollStats" class="primary">出身ダイスを振る</button>
+              <button type="button" id="randomSeed" class="ghost">光の種をランダム</button>
+              <button type="button" id="resetSheet" class="danger">初期化</button>
+            </div>
+            <p id="originNote" class="note"></p>
+            <p id="specialtyNote" class="note"></p>
+          </section>
+        </div>
+
+        <section class="card">
+          <div class="card-title">
+            <h2>自動チェック</h2>
+            <span class="hint">不足や超過があると表示されます</span>
+          </div>
+          <div id="warnings" class="warnings"></div>
+        </section>
+      </section>
+
+      <section id="tab-stats" class="tab-panel">
+        <div class="grid two wide-left">
+          <section class="card">
+            <div class="card-title">
+              <h2>主能力値</h2>
+              <span class="hint">能力値ボーナス = 能力値 ÷ 6 切り捨て</span>
+            </div>
+            <div class="table-wrap">
+              <table class="sheet-table" id="statsTable">
+                <thead>
+                  <tr>
+                    <th>能力</th>
+                    <th>出身ダイス</th>
+                    <th>基礎値</th>
+                    <th>強化</th>
+                    <th>その他</th>
+                    <th>得意</th>
+                    <th>合計</th>
+                    <th>ボーナス</th>
+                    <th>強化費</th>
+                  </tr>
+                </thead>
+                <tbody id="statRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-title">
+              <h2>副能力値</h2>
+              <span class="hint">ルールブックの式に沿って計算</span>
+            </div>
+            <div class="mini-grid" id="derivedCards"></div>
+            <div class="form-grid compact">
+              <label>追加速度ダイス<input id="speedDiceExtra" class="bind" data-path="combat.speedDiceExtra" type="number" min="0" step="1" /></label>
+              <label>光最大値補正<input id="lightMaxExtra" class="bind" data-path="combat.lightMaxExtra" type="number" step="1" /></label>
+              <label>現在光<input id="lightCurrent" class="bind" data-path="combat.lightCurrent" type="number" min="0" step="1" /></label>
+              <label>感情レベル<input id="emotionLevel" class="bind" data-path="emotion.level" type="number" min="1" step="1" /></label>
+              <label>PE<input id="positiveEmotion" class="bind" data-path="emotion.pe" type="number" min="0" step="1" /></label>
+              <label>NE<input id="negativeEmotion" class="bind" data-path="emotion.ne" type="number" min="0" step="1" /></label>
+              <label class="check-label"><span>混乱</span><input id="confused" class="bind" data-path="conditions.confused" type="checkbox" /></label>
+              <label>現在狂気点<input id="insanityCurrent" class="bind" data-path="mind.insanityCurrent" type="number" min="0" step="1" /></label>
+              <label>ねじれ点<input id="twistPoint" class="bind" data-path="mind.twistPoint" type="number" min="0" step="1" /></label>
+            </div>
+            <div id="speedChoiceControls" class="speed-choice-controls"></div>
+          </section>
+        </div>
+
+          <section class="card">
+            <div class="card-title"><h2>成長・費用メモ</h2><span class="hint">名声点と強化費の確認用</span></div>
+            <div class="grid three">
+              <div class="info-box"><h3>階級表</h3><div id="rankTable"></div></div>
+              <div class="info-box"><h3>強化費用表</h3><div id="costTable"></div></div>
+              <div class="info-box"><h3>資源</h3><div id="resourceSummary"></div></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-title"><h2>Tekey状態管理</h2><span class="hint">付属ステータステーブルの状態異常カラム</span></div>
+            <div class="form-grid compact">
+              <label>パワー<input id="power" class="bind" data-path="conditions.power" type="number" step="1" /></label>
+              <label>クイック<input id="quick" class="bind" data-path="conditions.quick" type="number" step="1" /></label>
+              <label>忍耐<input id="endurance" class="bind" data-path="conditions.endurance" type="number" step="1" /></label>
+              <label>保護<input id="protection" class="bind" data-path="conditions.protection" type="number" step="1" /></label>
+              <label>脆弱<input id="fragile" class="bind" data-path="conditions.fragile" type="number" step="1" /></label>
+              <label>出血<input id="bleed" class="bind" data-path="conditions.bleed" type="number" step="1" /></label>
+              <label>火傷<input id="burn" class="bind" data-path="conditions.burn" type="number" step="1" /></label>
+              <label>麻痺<input id="paralysis" class="bind" data-path="conditions.paralysis" type="number" step="1" /></label>
+            </div>
+          </section>
+      </section>
+
+      <section id="tab-enhancement" class="tab-panel">
+        <section class="card">
+          <div class="card-title">
+            <h2>強化施術</h2>
+            <span class="hint">能力値を眼で強化し、施術費を自動計算します</span>
+          </div>
+          <div id="enhancementSummary" class="mini-grid"></div>
+          <div class="table-wrap">
+            <table class="sheet-table enhancement-table">
+              <thead>
+                <tr>
+                  <th>能力</th>
+                  <th>基礎値</th>
+                  <th>得意</th>
+                  <th>その他</th>
+                  <th>施術</th>
+                  <th>施術前</th>
+                  <th>施術後</th>
+                  <th>ボーナス</th>
+                  <th>費用</th>
+                  <th>内訳</th>
+                </tr>
+              </thead>
+              <tbody id="enhancementRows"></tbody>
+            </table>
+          </div>
+          <p class="note">施術費は、施術で上昇した後の能力値が属する費用帯で1点ずつ計算します。ここで入力した値は「能力・副能力」タブの強化列と同期します。</p>
+        </section>
+
+        <div class="grid two">
+          <section class="card">
+            <div class="card-title"><h2>施術費用表</h2><span class="hint">能力値帯ごとの1点費用</span></div>
+            <div id="enhancementCostTable"></div>
+          </section>
+          <section class="card">
+            <div class="card-title"><h2>施術費内訳</h2><span class="hint">能力ごとの消費額</span></div>
+            <div id="enhancementBreakdown"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-seed" class="tab-panel">
+        <div class="grid two">
+          <section class="card">
+            <div class="card-title"><h2>光の種</h2><span class="hint">価値観・信念・恐怖の核</span></div>
+            <div class="form-grid">
+              <label>対応番号<select id="lightSeedNumber" class="bind" data-path="lightSeed.number"></select></label>
+              <label>発芽率<input id="germinationRate" class="bind" data-path="lightSeed.germinationRate" type="number" min="0" max="100" step="1" /></label>
+            </div>
+            <label class="full-label">光の種の内容<input id="lightSeedText" class="bind" data-path="lightSeed.text" type="text" /></label>
+            <label class="full-label">具体化メモ<textarea id="lightSeedMemo" class="bind" data-path="lightSeed.memo" rows="5" placeholder="この信念・恐怖がどんな行動に出るか"></textarea></label>
+          </section>
+
+          <section class="card">
+            <div class="card-title"><h2>プロフィール</h2><span class="hint">セッションで使う背景欄</span></div>
+            <label class="full-label">フィクサー経歴表<input id="fixerHistory" class="bind" data-path="profile.fixerHistory" type="text" placeholder="経歴表ロール結果" /></label>
+            <div class="button-row">
+              <button type="button" id="rollFixerHistory" class="ghost">経歴表を振る</button>
+            </div>
+            <label class="full-label">経歴<textarea id="history" class="bind" data-path="profile.history" rows="5"></textarea></label>
+            <label class="full-label">外見・性格<textarea id="appearance" class="bind" data-path="profile.appearance" rows="4"></textarea></label>
+            <label class="full-label">関係者・目的<textarea id="bonds" class="bind" data-path="profile.bonds" rows="4"></textarea></label>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-equipment" class="tab-panel">
+        <section class="card">
+          <div class="card-title"><h2>武器</h2><button type="button" id="addWeapon" class="ghost small">+ 武器</button></div>
+          <div class="table-wrap"><table class="sheet-table editable"><thead><tr><th>名称</th><th>ランク</th><th>属性</th><th>威力</th><th>命中補正</th><th>重量</th><th>価格</th><th>メモ</th><th></th></tr></thead><tbody id="weaponRows"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>防具</h2><button type="button" id="addArmor" class="ghost small">+ 防具</button></div>
+          <div class="table-wrap"><table class="sheet-table editable armor-table"><thead><tr><th>名称</th><th>斬撃</th><th>貫通</th><th>打撃</th><th>重量</th><th>価格</th><th>メモ</th><th></th></tr></thead><tbody id="armorRows"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>アイテム</h2><button type="button" id="addItem" class="ghost small">+ アイテム</button></div>
+          <div class="table-wrap"><table class="sheet-table editable"><thead><tr><th>名称</th><th>個数</th><th>単重量</th><th>単価</th><th>効果・メモ</th><th></th></tr></thead><tbody id="itemRows"></tbody></table></div>
+          <p class="note">重量が最大重量を超えると、判定ペナルティ目安を自動表示します。</p>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>義体</h2><button type="button" id="addProsthetic" class="ghost small">+ 義体</button></div>
+          <div class="table-wrap"><table class="sheet-table editable prosthetic-table"><thead><tr><th>名称</th><th>部位</th><th>能力・補正</th><th>重量</th><th>価格</th><th>効果・メモ</th><th></th></tr></thead><tbody id="prostheticRows"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title">
+            <h2>購入カタログ</h2>
+            <span class="hint">ルールブック記載の武器・防具耐性費用・アイテム・義体を所持品へ追加します</span>
+          </div>
+          <p class="note">購入ボタンを押すと上の所持品欄へ追加され、価格と重量が自動集計されます。防具耐性は「防具耐性セット」1行にまとめて反映されます。卓やVCの裁定に合わせて、追加後の数値やメモは編集できます。</p>
+          <div id="equipmentCatalog" class="purchase-catalog"></div>
+        </section>
+      </section>
+
+      <section id="tab-equipment-upgrades" class="tab-panel">
+        <section class="card">
+          <div class="card-title">
+            <h2>装備強化</h2>
+            <button type="button" id="addEquipmentUpgrade" class="ghost small">+ 強化</button>
+          </div>
+          <div class="table-wrap">
+            <table class="sheet-table editable upgrade-table">
+              <thead>
+                <tr>
+                  <th>対象</th>
+                  <th>対象名</th>
+                  <th>強化</th>
+                  <th>ランク</th>
+                  <th>属性/適正</th>
+                  <th>値</th>
+                  <th>費用</th>
+                  <th>効果</th>
+                  <th>補足</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="equipmentUpgradeRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-title">
+            <h2>公式強化一覧</h2>
+            <span class="hint">ルールブック「武具の強化」に掲載されている強化項目</span>
+          </div>
+          <div id="equipmentUpgradeCatalog" class="upgrade-catalog"></div>
+        </section>
+      </section>
+
+      <section id="tab-skills" class="tab-panel">
+        <section class="card">
+          <div class="card-title"><h2>戦闘特技</h2><button type="button" id="addSkill" class="ghost small">+ 技能</button></div>
+          <p class="note">下の一覧から戦闘特技を習得すると、必要技能点を自動で使用量に加算します。一覧外の卓裁定や手入力データは「+ 技能」から追加できます。</p>
+          <div class="table-wrap"><table class="sheet-table editable skill-table"><thead><tr><th>種別</th><th>名称</th><th>SL</th><th>コスト/光</th><th>技能点</th><th>条件</th><th>効果メモ</th><th></th></tr></thead><tbody id="skillRows"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>戦闘特技一覧</h2><span class="hint">公式戦闘特技を選択して習得します</span></div>
+          <div id="combatEffectCatalog" class="effect-catalog"></div>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>パッシブスキル</h2><button type="button" id="addPassive" class="ghost small">+ パッシブ</button></div>
+          <div id="specialtyPassivePreview" class="selected-passive"></div>
+          <div class="table-wrap"><table class="sheet-table editable"><thead><tr><th>名称</th><th>種別</th><th>SL</th><th>技能点</th><th>効果メモ</th><th></th></tr></thead><tbody id="passiveRows"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>公式パッシブ一覧</h2><span class="hint">ルールブック78-86ページ掲載のパッシブを選択して取得します</span></div>
+          <div id="officialPassiveCatalog" class="effect-catalog"></div>
+        </section>
+      </section>
+
+      <section id="tab-office" class="tab-panel">
+        <div class="grid two">
+          <section class="card">
+            <div class="card-title"><h2>フィクサー事務所</h2><span class="hint">作成時の事務所レベルは1</span></div>
+            <div class="form-grid">
+              <label>事務所名<input id="officeName" class="bind" data-path="office.name" type="text" /></label>
+              <label>代表<input id="officeLeader" class="bind" data-path="office.leader" type="text" /></label>
+              <label>事務所レベル<input id="officeLevel" class="bind" data-path="office.level" type="number" min="1" step="1" /></label>
+              <label>事務所名声点<input id="officeFame" class="bind" data-path="office.fame" type="number" min="0" step="1" /></label>
+            </div>
+            <label class="full-label">所属メンバー<textarea id="officeMembers" class="bind" data-path="office.members" rows="5"></textarea></label>
+          </section>
+          <section class="card">
+            <div class="card-title"><h2>戦術スキル</h2><span class="hint">事務所で2種類選ぶ欄</span></div>
+            <label class="full-label">戦術スキル1<select id="tactic1" class="bind" data-path="office.tactic1"></select></label>
+            <div id="tactic1Detail" class="tactic-detail"></div>
+            <label class="full-label">戦術スキル2<select id="tactic2" class="bind" data-path="office.tactic2"></select></label>
+            <div id="tactic2Detail" class="tactic-detail"></div>
+            <label class="full-label">事務所メモ<textarea id="officeMemo" class="bind" data-path="office.memo" rows="6"></textarea></label>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-library" class="tab-panel">
+        <div class="grid two wide-left">
+          <section class="card">
+            <div class="card-title">
+              <h2>アカウント</h2>
+              <span class="hint">このブラウザ内の保存名です</span>
+            </div>
+            <div class="form-grid compact">
+              <label>アカウント名<input id="loginName" type="text" autocomplete="username" placeholder="例：potey" /></label>
+              <label>表示名<input id="loginDisplayName" type="text" placeholder="未入力ならアカウント名" /></label>
+            </div>
+            <div class="button-row">
+              <button type="button" id="loginAccount" class="primary">ログイン/作成</button>
+              <button type="button" id="logoutAccount" class="ghost">ログアウト</button>
+            </div>
+            <p id="accountNote" class="note"></p>
+          </section>
+
+          <section class="card">
+            <div class="card-title">
+              <h2>現在のキャラクター</h2>
+              <span class="hint">ログイン中の保存庫に登録します</span>
+            </div>
+            <div id="currentCharacterSaveSummary" class="mini-grid"></div>
+            <div class="form-grid compact">
+              <label>保存名<input id="librarySaveName" type="text" placeholder="未入力ならキャラクター名" /></label>
+              <label>保存メモ<input id="librarySaveMemo" type="text" placeholder="例：第1話開始時" /></label>
+            </div>
+            <div class="button-row">
+              <button type="button" id="saveCharacterToLibraryPanel" class="primary">このキャラを保存</button>
+              <button type="button" id="newCharacterFromLibrary" class="ghost">新規キャラ作成</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="card">
+          <div class="card-title">
+            <h2>保存したキャラクター</h2>
+            <span class="hint">他キャラクターの確認、読み込み、共有</span>
+          </div>
+          <div id="savedCharacterList" class="character-list"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-title">
+            <h2>共有</h2>
+            <span class="hint">LoM専用インポートコードで受け渡します</span>
+          </div>
+          <div id="shareAccountInfo" class="share-account"></div>
+          <label class="full-label">現在のキャラクター共有コード<textarea id="shareCode" class="readonly-output" rows="7" readonly spellcheck="false"></textarea></label>
+          <div class="button-row">
+            <button type="button" id="copyShareCode" class="primary">共有コードをコピー</button>
+          </div>
+          <label class="full-label">共有コードのインポート<textarea id="shareImportCode" class="readonly-output" rows="7" spellcheck="false" placeholder="LOMTRPG-CHARACTER-CODE-V2 から始まるコードを貼り付け"></textarea></label>
+          <div class="button-row">
+            <button type="button" id="importShareCode" class="ghost">共有コードをインポート</button>
+          </div>
+          <p class="note">共有コードにはキャラクターデータと共有時のアカウント名が含まれます。秘密にしたい情報を入力している場合は、共有前に内容を確認してください。</p>
+        </section>
+      </section>
+
+      <section id="tab-output" class="tab-panel">
+        <section class="card">
+          <div class="card-title">
+            <h2>Tekeyコマ作成</h2>
+            <span class="hint">ステータステーブル値と、任意のAPI URLを生成します</span>
+          </div>
+          <div class="grid two">
+            <div>
+              <div class="form-grid compact">
+                <label>データ参照URL<input id="tekeyReferenceUrl" class="bind" data-path="tekey.referenceUrl" type="url" placeholder="キャラシ公開URLなど" /></label>
+                <label>画像URL<input id="tekeyImageUrl" class="bind" data-path="tekey.imageUrl" type="url" placeholder="Tekey内で参照できる画像URL" /></label>
+                <label>コマX座標<input id="tekeyX" class="bind" data-path="tekey.x" type="number" step="1" /></label>
+                <label>コマY座標<input id="tekeyY" class="bind" data-path="tekey.y" type="number" step="1" /></label>
+                <label>コマサイズ<input id="tekeySize" class="bind" data-path="tekey.size" type="number" min="1" step="1" /></label>
+                <label>速度/並び順値<input id="tekeyInitiative" class="bind" data-path="tekey.initiative" type="number" step="1" /></label>
+              </div>
+              <div class="form-grid compact secret-grid">
+                <label>APIキー<input id="tekeyApiKey" class="tekey-live" type="password" autocomplete="off" placeholder="保存しません" /></label>
+                <label>ルームID<input id="tekeyRoom" class="tekey-live" type="text" autocomplete="off" placeholder="保存しません" /></label>
+                <label>ルームパスワード<input id="tekeyPassword" class="tekey-live" type="password" autocomplete="off" placeholder="保存しません" /></label>
+                <label>文字色<input id="tekeyColor" class="bind" data-path="tekey.color" type="color" /></label>
+              </div>
+              <p class="note">APIキー、ルームID、パスワードはブラウザ保存に含めません。速度/並び順値は、付属ステータステーブルの非表示「速度」に入ります。TekeyのAPIを使わない場合は、チャットパレットと各パラメータを控えてください。</p>
+            </div>
+            <div class="output-stack">
+              <label class="full-label">addCharacter API URL<textarea id="tekeyApiUrl" class="readonly-output" rows="5" readonly spellcheck="false"></textarea></label>
+              <label class="full-label">setColumns API URL<textarea id="tekeySetColumnsUrl" class="readonly-output" rows="3" readonly spellcheck="false"></textarea></label>
+              <div class="button-row">
+                <button type="button" id="copyTekeySetup" class="ghost">設定メモコピー</button>
+                <button type="button" id="downloadTekeyStatusTable" class="ghost">ステータステーブルJSON保存</button>
+                <button type="button" id="downloadTekeyCounterRemote" class="ghost">カウンターリモコンJSON保存</button>
+                <button type="button" id="copyTekeyApiUrl" class="primary">API URLをコピー</button>
+                <button type="button" id="copyTekeySetColumnsUrl" class="ghost">setColumns URLコピー</button>
+                <button type="button" id="downloadTekeyBundle" class="ghost">Tekey出力を保存</button>
+              </div>
+              <div class="copy-grid">
+                <div>
+                  <div class="mini-title">values</div>
+                  <pre id="tekeyValues" class="mini-output"></pre>
+                  <button type="button" id="copyTekeyValues" class="ghost small">valuesコピー</button>
+                </div>
+                <div>
+                  <div class="mini-title">columns</div>
+                  <pre id="tekeyColumns" class="mini-output"></pre>
+                  <button type="button" id="copyTekeyColumns" class="ghost small">columnsコピー</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-title">
+            <h2>ココフォリアコマ出力</h2>
+            <span class="hint">Clipboard API形式のキャラクターJSON</span>
+          </div>
+          <div class="grid two wide-left">
+            <label class="full-label">コマJSON<textarea id="ccfoliaJson" class="readonly-output ccfolia-output" rows="14" readonly spellcheck="false"></textarea></label>
+            <div class="info-box">
+              <h3>出力内容</h3>
+              <table class="info-table">
+                <tbody>
+                  <tr><th>ステータス</th><td>HP、MP、光、感情、狂気点、状態異常</td></tr>
+                  <tr><th>パラメータ</th><td>主能力値、能力値B、命中、防御、回避、レベル</td></tr>
+                  <tr><th>メモ</th><td>プロフィール、装備、技能、固有/選択パッシブ詳細</td></tr>
+                  <tr><th>チャパレ</th><td>LoMTRPG判定式と戦闘参照コマンド</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="button-row">
+            <button type="button" id="copyCcfoliaJson" class="primary">コマJSONをコピー</button>
+            <button type="button" id="downloadCcfoliaJson" class="ghost">コマJSON保存</button>
+          </div>
+        </section>
+
+        <div class="grid two wide-left">
+          <section class="card">
+            <div class="card-title"><h2>Tekeyチャットパレット</h2><span class="hint">Tekeyのパラメータ置換と###プルダウン形式</span></div>
+            <div class="form-grid compact">
+              <label>立ち絵項目名<input id="tekeyPortrait" class="bind" data-path="tekey.portrait" type="text" placeholder="例：通常" /></label>
+              <label>チャパレ見出し<input id="tekeyPaletteLabel" class="bind" data-path="tekey.paletteLabel" type="text" placeholder="未入力ならキャラクター名" /></label>
+            </div>
+            <pre id="tekeyPalette" class="sheet-output palette-output"></pre>
+            <div class="button-row">
+              <button type="button" id="copyTekeyPalette" class="primary">チャパレをコピー</button>
+              <button type="button" id="downloadTekeyPalette" class="ghost">チャパレtxt保存</button>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-title"><h2>シート出力</h2><span class="hint">共有やメモに貼れる全文テキスト</span></div>
+            <pre id="sheetText" class="sheet-output"></pre>
+            <div class="button-row">
+              <button type="button" id="copySheet" class="primary">テキストをコピー</button>
+              <button type="button" id="downloadText" class="ghost">txt保存</button>
+            </div>
+          </section>
+        </div>
+
+        <div class="grid">
+          <section class="card">
+            <div class="card-title"><h2>JSON入出力</h2><span class="hint">ブラウザ保存とは別にバックアップ</span></div>
+            <div class="button-row stack">
+              <button type="button" id="downloadJson" class="primary">JSONをダウンロード</button>
+              <label class="file-button">JSONを読み込む<input type="file" id="importJson" accept="application/json,.json" /></label>
+              <button type="button" id="copyJson" class="ghost">JSONをコピー</button>
+            </div>
+            <textarea id="jsonBox" rows="14" spellcheck="false" placeholder="ここにJSONを貼って「JSON反映」を押すこともできます"></textarea>
+            <button type="button" id="applyJson" class="ghost">JSON反映</button>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>このツールはアップロードされたルールブックを参照して作った非公式のローカル用キャラクター作成補助です。原文・画像は同梱していません。</p>
+    </footer>
+  </div>
+
+  <aside class="skill-point-bar" aria-label="技能点サマリー">
+    <div><span>所有技能点</span><strong id="bottomSkillOwned">0</strong></div>
+    <div><span>現在所持金</span><strong id="bottomCashLeft">0眼</strong></div>
+    <div><span>消費した眼</span><strong id="bottomMoneyUsed">0眼</strong></div>
+    <div><span>合計使用技能点</span><strong id="bottomSkillUsed">0</strong></div>
+    <div><span>残技能点</span><strong id="bottomSkillLeft">0</strong></div>
+  </aside>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

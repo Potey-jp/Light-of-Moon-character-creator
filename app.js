@@ -390,6 +390,9 @@ const PROSTHETIC_SERIES = [
   { rank: 'Sランクの', handCost: [60000000, 75000000, 75000000], torsoCost: [120000000, 150000000, 150000000], hand: [[12, 25], [13, 23], [11, 26]], torso: [[25, 50], [23, 46], [26, 52]] }
 ];
 
+const PROSTHETIC_RANKS = ['粗悪', 'D', 'C', 'B', 'A', 'S'];
+const PROSTHETIC_LOCATIONS = ['義手', '義足', '胴体', '頭部'];
+
 const OFFICIAL_PROSTHETICS = [
   ...buildProstheticSeries('義手', ['STR', 'AGE'], 'hand'),
   ...buildProstheticSeries('義足', ['STR', 'DEX'], 'hand'),
@@ -628,15 +631,19 @@ function buildProstheticSeries(location, statLabels, statKey) {
     return series[statKey].map(([first, second], index) => {
       const marker = variants[index];
       const name = `${series.rank}${location}${marker}`;
+      const rank = normalizeProstheticRank(series.rank);
       const statText = `${statLabels[0]}:${first} / ${statLabels[1]}:${second}`;
       const cost = costList[index];
       return {
         id: `prosthetic-${location}-${series.rank}-${marker}`,
         name,
-        description: `${location} / ${series.rank.replace('の', '')}`,
-        meta: [`部位:${location}`, statText, formatStaticMoney(cost)],
+        description: `${location} / ${rank || series.rank.replace('の', '')}`,
+        rank,
+        location,
+        meta: [`ランク:${rank || '-'}`, `部位:${location}`, statText, formatStaticMoney(cost)],
         row: {
           name,
+          rank,
           location,
           stat: statText,
           weight: 0,
@@ -1452,6 +1459,32 @@ function normalizeArmorRow(row) {
   };
 }
 
+function normalizeProstheticRank(value) {
+  const text = String(value || '').replace(/ランク/g, '').replace(/の/g, '').trim();
+  if (!text) return '';
+  if (text.includes('粗悪')) return '粗悪';
+  const matched = PROSTHETIC_RANKS.find((rank) => rank !== '粗悪' && text.includes(rank));
+  return matched || '';
+}
+
+function normalizeProstheticLocation(value) {
+  const text = String(value || '').trim();
+  return PROSTHETIC_LOCATIONS.find((location) => text.includes(location)) || text;
+}
+
+function normalizeProstheticRow(row) {
+  const sourceText = `${row?.rank || ''} ${row?.name || ''} ${row?.memo || ''}`;
+  return {
+    name: row?.name || '',
+    rank: normalizeProstheticRank(row?.rank || sourceText),
+    location: normalizeProstheticLocation(row?.location || row?.name),
+    stat: row?.stat || '',
+    weight: row?.weight ?? 0,
+    cost: row?.cost ?? 0,
+    memo: row?.memo || ''
+  };
+}
+
 function createBlankArmorRow(name = '') {
   return {
     name,
@@ -1469,7 +1502,13 @@ function createBlankArmorRow(name = '') {
 
 function formatArmorResistanceLine(row) {
   const armor = normalizeArmorRow(row);
-  return `斬:${armor.slash} 混斬:${armor.slashPanic} 貫:${armor.pierce} 混貫:${armor.piercePanic} 打:${armor.blunt} 混打:${armor.bluntPanic}`;
+  return `物理[斬撃:${armor.slash} / 貫通:${armor.pierce} / 打撃:${armor.blunt}] 混乱[斬撃:${armor.slashPanic} / 貫通:${armor.piercePanic} / 打撃:${armor.bluntPanic}]`;
+}
+
+function formatProstheticLine(row, singleLine = false) {
+  const prosthetic = normalizeProstheticRow(row);
+  const line = `・${prosthetic.name || '無名義体'} [${prosthetic.rank || '-'} / ${prosthetic.location || '-'}] ${prosthetic.stat || '-'} 重量:${prosthetic.weight || 0} 価格:${formatMoney(prosthetic.cost || 0)} ${prosthetic.memo || ''}`;
+  return singleLine ? oneLine(line.replace(/^・/, '')) : line;
 }
 
 function armorResistanceCostFor(resistance) {
@@ -1619,6 +1658,9 @@ function mergeDefaults(input) {
   if (Array.isArray(merged.equipment?.armors)) {
     merged.equipment.armors = mergeCatalogArmorRows(merged.equipment.armors);
   }
+  if (Array.isArray(merged.equipment?.prosthetics)) {
+    merged.equipment.prosthetics = merged.equipment.prosthetics.map(normalizeProstheticRow);
+  }
   if (!Array.isArray(merged.equipment?.upgrades)) {
     merged.equipment.upgrades = [];
   } else {
@@ -1720,14 +1762,14 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 }
 
-function renderArmorResistanceStack(index, mainField, panicField) {
+function renderArmorResistanceGroup(index, mainField, panicField) {
   return `
-    <div class="armor-resistance-stack">
-      <label>
+    <div class="armor-resistance-group">
+      <label class="armor-resistance-field armor-resistance-field-physical">
         <span>耐性</span>
         <select data-array="armors" data-index="${index}" data-field="${mainField}">${createOptions(RESISTANCES, state.equipment.armors[index]?.[mainField])}</select>
       </label>
-      <label>
+      <label class="armor-resistance-field armor-resistance-field-panic">
         <span>混乱耐性</span>
         <select data-array="armors" data-index="${index}" data-field="${panicField}">${createOptions(RESISTANCES, state.equipment.armors[index]?.[panicField])}</select>
       </label>
@@ -1750,9 +1792,9 @@ function renderDynamicTables() {
 
   renderRows('armorRows', state.equipment.armors, 'armors', (row, index) => `
     <td><input data-array="armors" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
-    <td>${renderArmorResistanceStack(index, 'slash', 'slashPanic')}</td>
-    <td>${renderArmorResistanceStack(index, 'pierce', 'piercePanic')}</td>
-    <td>${renderArmorResistanceStack(index, 'blunt', 'bluntPanic')}</td>
+    <td>${renderArmorResistanceGroup(index, 'slash', 'slashPanic')}</td>
+    <td>${renderArmorResistanceGroup(index, 'pierce', 'piercePanic')}</td>
+    <td>${renderArmorResistanceGroup(index, 'blunt', 'bluntPanic')}</td>
     <td><input type="number" data-array="armors" data-index="${index}" data-field="weight" value="${row.weight ?? 0}" /></td>
     <td><input type="number" data-array="armors" data-index="${index}" data-field="cost" value="${row.cost ?? 0}" /></td>
     <td><textarea data-array="armors" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
@@ -1780,15 +1822,20 @@ function renderDynamicTables() {
     <td><button type="button" class="danger small" data-remove="rewardItems" data-index="${index}">削除</button></td>
   `);
 
-  renderRows('prostheticRows', state.equipment.prosthetics, 'prosthetics', (row, index) => `
-    <td><input data-array="prosthetics" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
-    <td><input data-array="prosthetics" data-index="${index}" data-field="location" value="${escapeHtml(row.location)}" /></td>
-    <td><input data-array="prosthetics" data-index="${index}" data-field="stat" value="${escapeHtml(row.stat)}" /></td>
-    <td><input type="number" data-array="prosthetics" data-index="${index}" data-field="weight" value="${row.weight ?? 0}" /></td>
-    <td><input type="number" data-array="prosthetics" data-index="${index}" data-field="cost" value="${row.cost ?? 0}" /></td>
-    <td><textarea data-array="prosthetics" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
+  renderRows('prostheticRows', state.equipment.prosthetics, 'prosthetics', (row, index) => {
+    const prosthetic = normalizeProstheticRow(row);
+    state.equipment.prosthetics[index] = prosthetic;
+    return `
+    <td><input data-array="prosthetics" data-index="${index}" data-field="name" value="${escapeHtml(prosthetic.name)}" /></td>
+    <td><select data-array="prosthetics" data-index="${index}" data-field="rank">${createLabeledOptions([{ value: '', label: '未設定' }, ...PROSTHETIC_RANKS.map((rank) => ({ value: rank, label: rank === '粗悪' ? '粗悪' : `${rank}ランク` }))], prosthetic.rank)}</select></td>
+    <td><select data-array="prosthetics" data-index="${index}" data-field="location">${createLabeledOptions([{ value: '', label: '未設定' }, ...PROSTHETIC_LOCATIONS.map((location) => ({ value: location, label: location }))], prosthetic.location)}</select></td>
+    <td><input data-array="prosthetics" data-index="${index}" data-field="stat" value="${escapeHtml(prosthetic.stat)}" /></td>
+    <td><input type="number" data-array="prosthetics" data-index="${index}" data-field="weight" value="${prosthetic.weight ?? 0}" /></td>
+    <td><input type="number" data-array="prosthetics" data-index="${index}" data-field="cost" value="${prosthetic.cost ?? 0}" /></td>
+    <td><textarea data-array="prosthetics" data-index="${index}" data-field="memo">${escapeHtml(prosthetic.memo)}</textarea></td>
     <td><button type="button" class="danger small" data-remove="prosthetics" data-index="${index}">削除</button></td>
-  `);
+    `;
+  });
 
   if (!Array.isArray(state.equipment.upgrades)) state.equipment.upgrades = [];
   renderRows('equipmentUpgradeRows', state.equipment.upgrades, 'equipmentUpgrades', (row, index) => {
@@ -1951,22 +1998,67 @@ function renderWeaponCatalogGroup(group) {
 
 function renderArmorCatalogGroup(group) {
   const armorGroups = [
-    { label: '斬撃', fields: ['slash', 'slashPanic'] },
-    { label: '貫通', fields: ['pierce', 'piercePanic'] },
-    { label: '打撃', fields: ['blunt', 'bluntPanic'] }
+    { label: '斬撃', physical: 'slash', panic: 'slashPanic' },
+    { label: '貫通', physical: 'pierce', panic: 'piercePanic' },
+    { label: '打撃', physical: 'blunt', panic: 'bluntPanic' }
   ];
   return `
     <div class="purchase-subgroups armor-catalog-subgroups">
       ${armorGroups.map((armorGroup) => {
-        const entries = group.entries.filter((entry) => armorGroup.fields.includes(entry.targetField));
+        const physicalEntries = group.entries.filter((entry) => entry.targetField === armorGroup.physical);
+        const panicEntries = group.entries.filter((entry) => entry.targetField === armorGroup.panic);
         return `
           <details class="purchase-subgroup">
             <summary>
               <strong>${escapeHtml(armorGroup.label)}</strong>
-              <span>物理耐性と混乱耐性</span>
+              <span>物理耐性 / 混乱耐性</span>
             </summary>
-            <div class="purchase-list armor-purchase-list">
-              ${entries.map((entry) => renderPurchaseItem(group, entry)).join('')}
+            <div class="armor-catalog-types">
+              <section>
+                <h3>物理耐性</h3>
+                <div class="purchase-list armor-purchase-list">
+                  ${physicalEntries.map((entry) => renderPurchaseItem(group, entry)).join('')}
+                </div>
+              </section>
+              <section>
+                <h3>混乱耐性</h3>
+                <div class="purchase-list armor-purchase-list">
+                  ${panicEntries.map((entry) => renderPurchaseItem(group, entry)).join('')}
+                </div>
+              </section>
+            </div>
+          </details>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderProstheticCatalogGroup(group) {
+  return `
+    <div class="purchase-subgroups prosthetic-catalog-subgroups">
+      ${PROSTHETIC_RANKS.map((rank) => {
+        const rankEntries = group.entries.filter((entry) => entry.rank === rank);
+        if (!rankEntries.length) return '';
+        return `
+          <details class="purchase-subgroup">
+            <summary>
+              <strong>${escapeHtml(rank)}${rank === '粗悪' ? '' : 'ランク'}</strong>
+              <span>${rankEntries.length}件 / 部位別</span>
+            </summary>
+            <div class="prosthetic-location-groups">
+              ${PROSTHETIC_LOCATIONS.map((location) => {
+                const entries = rankEntries.filter((entry) => entry.location === location);
+                if (!entries.length) return '';
+                return `
+                  <section class="prosthetic-location-group">
+                    <h3>${escapeHtml(location)}</h3>
+                    <div class="purchase-list prosthetic-purchase-list">
+                      ${entries.map((entry) => renderPurchaseItem(group, entry)).join('')}
+                    </div>
+                  </section>
+                `;
+              }).join('')}
             </div>
           </details>
         `;
@@ -1982,6 +2074,7 @@ function renderDefaultCatalogGroup(group) {
 function renderEquipmentCatalogGroupBody(group) {
   if (group.id === 'weapons') return renderWeaponCatalogGroup(group);
   if (group.id === 'armors') return renderArmorCatalogGroup(group);
+  if (group.id === 'prosthetics') return renderProstheticCatalogGroup(group);
   return renderDefaultCatalogGroup(group);
 }
 
@@ -2449,7 +2542,7 @@ function addDynamicRow(name) {
     armors: { name: '', slash: '脆弱', slashPanic: '脆弱', pierce: '脆弱', piercePanic: '脆弱', blunt: '脆弱', bluntPanic: '脆弱', weight: 0, cost: 0, memo: '' },
     items: { name: '', qty: 1, weight: 0, cost: 0, memo: '' },
     rewardItems: { name: '', qty: 1, weight: 0, memo: '' },
-    prosthetics: { name: '', location: '', stat: '', weight: 0, cost: 0, memo: '' },
+    prosthetics: { name: '', rank: '', location: '', stat: '', weight: 0, cost: 0, memo: '' },
     equipmentUpgrades: getDefaultEquipmentUpgradeRow(),
     skills: { kind: '戦闘特技', name: '', sl: 1, lightCost: '', pointCost: 0, requirement: '', effects: [], memo: '' },
     passives: { name: '', kind: '汎用', sl: 1, pointCost: 0, memo: '' }
@@ -3664,7 +3757,7 @@ function buildSheetText() {
   const weapons = state.equipment.weapons.filter((row) => row.name || row.memo).map((row) => `・${row.name || '無名武器'} [${row.rank}/${row.type}] 威力:${row.power || '-'} 命中:${row.hit || '-'} 重量:${row.weight || 0} ${row.memo || ''}`).join('\n') || '・なし';
   const armors = state.equipment.armors.filter((row) => row.name || row.memo).map((row) => `・${row.name || '無名防具'} ${formatArmorResistanceLine(row)} 重量:${row.weight || 0} ${row.memo || ''}`).join('\n') || '・なし';
   const items = state.equipment.items.filter((row) => row.name || row.memo).map((row) => `・${row.name || '無名アイテム'} x${row.qty || 1} 重量:${row.weight || 0} 価格:${formatMoney(row.cost || 0)} ${row.memo || ''}`).join('\n') || '・なし';
-  const prosthetics = state.equipment.prosthetics.filter((row) => row.name || row.memo).map((row) => `・${row.name || '無名義体'} [${row.location || '-'}] ${row.stat || '-'} 重量:${row.weight || 0} 価格:${formatMoney(row.cost || 0)} ${row.memo || ''}`).join('\n') || '・なし';
+  const prosthetics = state.equipment.prosthetics.filter((row) => row.name || row.memo).map((row) => formatProstheticLine(row)).join('\n') || '・なし';
   const equipmentUpgrades = (state.equipment.upgrades || []).filter(hasEquipmentUpgradeContent).map(formatEquipmentUpgradeLine).join('\n') || '・なし';
   const enhancements = buildEnhancementLines();
   const skills = state.skills.combat.filter(hasCombatSkillContent).map(formatCombatSkillLine).join('\n') || '・なし';
@@ -3913,7 +4006,7 @@ function buildTekeyInfo() {
     .join(' / ') || 'なし';
   const prosthetics = state.equipment.prosthetics
     .filter((row) => row.name || row.memo)
-    .map((row) => `${row.name || '無名義体'}[${row.location || '-'}] ${row.stat || '-'} ${oneLine(row.memo)}`)
+    .map((row) => formatProstheticLine(row, true))
     .join(' / ') || 'なし';
   const equipmentUpgrades = (state.equipment.upgrades || [])
     .filter(hasEquipmentUpgradeContent)

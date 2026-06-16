@@ -207,20 +207,28 @@ textarea { resize: vertical; line-height: 1.65; }
   font-size: .86rem;
   line-height: 1.6;
 }
-.armor-resistance-stack {
+.armor-resistance-group {
   display: grid;
   gap: 8px;
   min-width: 132px;
 }
-.armor-resistance-stack label {
+.armor-resistance-field {
   display: grid;
   gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255,255,255,.025);
 }
-.armor-resistance-stack span {
+.armor-resistance-field-panic {
+  background: rgba(223,184,95,.055);
+}
+.armor-resistance-group span {
   color: var(--muted);
   font-size: .74rem;
+  font-weight: 700;
 }
-.armor-resistance-stack select {
+.armor-resistance-group select {
   width: 100%;
 }
 .stat-name { font-weight: 800; color: var(--gold-2); }
@@ -532,6 +540,42 @@ textarea { resize: vertical; line-height: 1.65; }
 }
 .armor-purchase-list {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  padding: 0;
+}
+.armor-catalog-types {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 10px 10px;
+}
+.armor-catalog-types section {
+  display: grid;
+  gap: 8px;
+}
+.armor-catalog-types h3 {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--gold-2);
+  font-size: .92rem;
+}
+.prosthetic-location-groups {
+  display: grid;
+  gap: 12px;
+  padding: 0 10px 10px;
+}
+.prosthetic-location-group {
+  display: grid;
+  gap: 8px;
+}
+.prosthetic-location-group h3 {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--gold-2);
+  font-size: .92rem;
+}
+.prosthetic-purchase-list {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  padding: 0;
 }
 .purchase-list {
   display: grid;
@@ -819,7 +863,7 @@ textarea { resize: vertical; line-height: 1.65; }
   .hero-actions { justify-content: flex-start; min-width: 0; }
   .summary-strip { grid-template-columns: repeat(3, 1fr); }
   .grid.two, .grid.two.wide-left, .grid.three { grid-template-columns: 1fr; }
-  .form-grid, .form-grid.compact, .mini-grid, .copy-grid, .passive-detail-head, .passive-detail-grid, .speed-choice-grid { grid-template-columns: 1fr; }
+  .form-grid, .form-grid.compact, .mini-grid, .copy-grid, .passive-detail-head, .passive-detail-grid, .speed-choice-grid, .armor-catalog-types { grid-template-columns: 1fr; }
   .speed-choice-head { flex-direction: column; }
   .effect-level-row { grid-template-columns: 1fr; }
 }

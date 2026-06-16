@@ -178,6 +178,19 @@ const RANK_TABLE = [
   { grade: '特色', level: 10, fame: 2600, next: null }
 ];
 
+const OFFICE_LEVEL_TABLE = [
+  { level: 1, fame: 0, next: 40 },
+  { level: 2, fame: 40, next: 100 },
+  { level: 3, fame: 100, next: 180 },
+  { level: 4, fame: 180, next: 280 },
+  { level: 5, fame: 280, next: 400 },
+  { level: 6, fame: 400, next: 540 },
+  { level: 7, fame: 540, next: 700 },
+  { level: 8, fame: 700, next: 880 },
+  { level: 9, fame: 880, next: 1080 },
+  { level: 10, fame: 1080, next: null }
+];
+
 const ENHANCE_COST_TABLE = [
   { min: 0, max: 5, bonus: 0, cost: 100000 },
   { min: 6, max: 11, bonus: 1, cost: 250000 },
@@ -1326,6 +1339,7 @@ const DEFAULT_STATE = {
   profile: { characterName: '', playerName: '', age: '', gender: '', role: '', fixerHistory: '', history: '', appearance: '', bonds: '' },
   build: { origin: 'nest', specialty: 'combat', specialtyPassive: '技量' },
   growth: { fame: 0, cashStart: 3000000, skillPointStart: 1000 },
+  rewards: { cash: 0, skillPoints: 0, fame: 0, officeFame: 0, germinationRate: 0, items: [] },
   stats: {
     STR: { base: 0, boost: 0, misc: 0 },
     DEX: { base: 0, boost: 0, misc: 0 },
@@ -1344,6 +1358,7 @@ const DEFAULT_STATE = {
     weapons: [{ name: '', rank: 'D', type: '斬撃', power: '', hit: '', weight: 0, cost: 0, memo: '' }],
     armors: [{ name: '', slash: '脆弱', slashPanic: '脆弱', pierce: '脆弱', piercePanic: '脆弱', blunt: '脆弱', bluntPanic: '脆弱', weight: 0, cost: 0, memo: '' }],
     items: [{ name: '', qty: 1, weight: 0, cost: 0, memo: '' }],
+    consumedItemCost: 0,
     prosthetics: [],
     upgrades: []
   },
@@ -1609,6 +1624,8 @@ function mergeDefaults(input) {
   } else {
     merged.equipment.upgrades = merged.equipment.upgrades.map(normalizeEquipmentUpgradeRow).filter(Boolean);
   }
+  if (!merged.rewards || typeof merged.rewards !== 'object') merged.rewards = structuredCloneSafe(DEFAULT_STATE.rewards);
+  if (!Array.isArray(merged.rewards.items)) merged.rewards.items = structuredCloneSafe(DEFAULT_STATE.rewards.items);
   if (Array.isArray(merged.skills?.combat)) {
     merged.skills.combat = migrateCombatSkillRows(merged.skills.combat);
   }
@@ -1748,7 +1765,19 @@ function renderDynamicTables() {
     <td><input type="number" data-array="items" data-index="${index}" data-field="weight" value="${row.weight ?? 0}" /></td>
     <td><input type="number" data-array="items" data-index="${index}" data-field="cost" value="${row.cost ?? 0}" /></td>
     <td><textarea data-array="items" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
-    <td><button type="button" class="danger small" data-remove="items" data-index="${index}">削除</button></td>
+    <td class="row-actions">
+      <button type="button" class="primary small" data-use-item="${index}">使用</button>
+      <button type="button" class="danger small" data-remove="items" data-index="${index}">削除</button>
+    </td>
+  `);
+
+  if (!state.rewards || !Array.isArray(state.rewards.items)) state.rewards = structuredCloneSafe(DEFAULT_STATE.rewards);
+  renderRows('rewardItemRows', state.rewards.items, 'rewardItems', (row, index) => `
+    <td><input data-array="rewardItems" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
+    <td><input type="number" min="1" data-array="rewardItems" data-index="${index}" data-field="qty" value="${row.qty ?? 1}" /></td>
+    <td><input type="number" min="0" data-array="rewardItems" data-index="${index}" data-field="weight" value="${row.weight ?? 0}" /></td>
+    <td><textarea data-array="rewardItems" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
+    <td><button type="button" class="danger small" data-remove="rewardItems" data-index="${index}">削除</button></td>
   `);
 
   renderRows('prostheticRows', state.equipment.prosthetics, 'prosthetics', (row, index) => `
@@ -2363,11 +2392,16 @@ function refreshCombatSkillCostDisplays() {
 }
 
 function hookDynamicTables() {
-  ['weaponRows', 'armorRows', 'itemRows', 'prostheticRows', 'equipmentUpgradeRows', 'skillRows', 'passiveRows'].forEach((id) => {
+  ['weaponRows', 'armorRows', 'itemRows', 'rewardItemRows', 'prostheticRows', 'equipmentUpgradeRows', 'skillRows', 'passiveRows'].forEach((id) => {
     const tbody = $(`#${id}`);
     tbody.addEventListener('input', handleDynamicInput);
     tbody.addEventListener('change', handleDynamicInput);
     tbody.addEventListener('click', (event) => {
+      const useItemButton = event.target.closest('[data-use-item]');
+      if (useItemButton) {
+        useItem(int(useItemButton.dataset.useItem));
+        return;
+      }
       const btn = event.target.closest('[data-remove]');
       if (!btn) return;
       removeDynamicRow(btn.dataset.remove, int(btn.dataset.index));
@@ -2395,6 +2429,10 @@ function getArrayByName(name) {
   if (name === 'weapons') return state.equipment.weapons;
   if (name === 'armors') return state.equipment.armors;
   if (name === 'items') return state.equipment.items;
+  if (name === 'rewardItems') {
+    if (!state.rewards || !Array.isArray(state.rewards.items)) state.rewards = structuredCloneSafe(DEFAULT_STATE.rewards);
+    return state.rewards.items;
+  }
   if (name === 'prosthetics') return state.equipment.prosthetics;
   if (name === 'equipmentUpgrades') {
     if (!Array.isArray(state.equipment.upgrades)) state.equipment.upgrades = [];
@@ -2410,6 +2448,7 @@ function addDynamicRow(name) {
     weapons: { name: '', rank: 'D', type: '斬撃', power: '', hit: '', weight: 0, cost: 0, memo: '' },
     armors: { name: '', slash: '脆弱', slashPanic: '脆弱', pierce: '脆弱', piercePanic: '脆弱', blunt: '脆弱', bluntPanic: '脆弱', weight: 0, cost: 0, memo: '' },
     items: { name: '', qty: 1, weight: 0, cost: 0, memo: '' },
+    rewardItems: { name: '', qty: 1, weight: 0, memo: '' },
     prosthetics: { name: '', location: '', stat: '', weight: 0, cost: 0, memo: '' },
     equipmentUpgrades: getDefaultEquipmentUpgradeRow(),
     skills: { kind: '戦闘特技', name: '', sl: 1, lightCost: '', pointCost: 0, requirement: '', effects: [], memo: '' },
@@ -2466,6 +2505,91 @@ function removeDynamicRow(name, index) {
   updateAll(true);
 }
 
+function useItem(index) {
+  if (!Array.isArray(state.equipment.items)) state.equipment.items = [];
+  if (!Number.isFinite(Number(state.equipment.consumedItemCost))) state.equipment.consumedItemCost = 0;
+  const row = state.equipment.items[index];
+  if (!row) return;
+  const qty = Math.max(1, int(row.qty, 1));
+  state.equipment.consumedItemCost += Math.max(0, int(row.cost));
+  if (qty > 1) {
+    row.qty = qty - 1;
+  } else {
+    state.equipment.items.splice(index, 1);
+  }
+  renderDynamicTables();
+  updateAll(true);
+  toast(`${row.name || 'アイテム'}を使用しました`);
+}
+
+function hasRewardItemContent(row) {
+  return Boolean(oneLine(row?.name) || oneLine(row?.memo) || clampNumber(row?.weight) || int(row?.qty) > 1);
+}
+
+function resetRewards() {
+  state.rewards = structuredCloneSafe(DEFAULT_STATE.rewards);
+}
+
+function rewardItemToEquipmentItem(row) {
+  return {
+    name: oneLine(row.name) || '報酬アイテム',
+    qty: Math.max(1, int(row.qty, 1)),
+    weight: Math.max(0, clampNumber(row.weight)),
+    cost: 0,
+    memo: row.memo || ''
+  };
+}
+
+function applyRewards() {
+  collectBoundInputs();
+  if (!state.rewards || !Array.isArray(state.rewards.items)) state.rewards = structuredCloneSafe(DEFAULT_STATE.rewards);
+  const reward = state.rewards;
+  const cash = Math.max(0, int(reward.cash));
+  const skillPoints = Math.max(0, int(reward.skillPoints));
+  const fame = Math.max(0, int(reward.fame));
+  const officeFame = Math.max(0, int(reward.officeFame));
+  const germinationRate = Math.max(0, int(reward.germinationRate));
+  const rewardItems = reward.items.filter(hasRewardItemContent).map(rewardItemToEquipmentItem);
+  const hasReward = Boolean(cash || skillPoints || fame || officeFame || germinationRate || rewardItems.length);
+  if (!hasReward) {
+    toast('適用する報酬がありません');
+    return;
+  }
+  state.growth.cashStart = int(state.growth.cashStart) + cash;
+  state.growth.skillPointStart = int(state.growth.skillPointStart) + skillPoints;
+  state.growth.fame = int(state.growth.fame) + fame;
+  state.office.fame = int(state.office.fame) + officeFame;
+  state.lightSeed.germinationRate = Math.min(100, Math.max(0, int(state.lightSeed.germinationRate) + germinationRate));
+  if (!Array.isArray(state.equipment.items)) state.equipment.items = [];
+  state.equipment.items.push(...rewardItems);
+  resetRewards();
+  populateStateToDom();
+  saveState();
+  toast(`報酬を適用しました（アイテム${rewardItems.length}件）`);
+}
+
+function updateRewardPreview() {
+  const root = $('#rewardPreview');
+  if (!root) return;
+  const reward = state.rewards || DEFAULT_STATE.rewards;
+  const currentGermination = int(state.lightSeed.germinationRate);
+  const nextGermination = Math.min(100, Math.max(0, currentGermination + Math.max(0, int(reward.germinationRate))));
+  const currentFame = int(state.growth.fame);
+  const nextFame = currentFame + Math.max(0, int(reward.fame));
+  const nextRank = getRankInfo(nextFame);
+  const currentOfficeFame = int(state.office.fame);
+  const nextOfficeFame = currentOfficeFame + Math.max(0, int(reward.officeFame));
+  const nextOfficeLevel = getOfficeLevelInfo(nextOfficeFame);
+  const itemCount = Array.isArray(reward.items) ? reward.items.filter(hasRewardItemContent).length : 0;
+  root.innerHTML = [
+    ['所持金', formatMoney(state.growth.cashStart), `+${formatMoney(Math.max(0, int(reward.cash)))}`],
+    ['技能点', int(state.growth.skillPointStart).toLocaleString('ja-JP'), `+${Math.max(0, int(reward.skillPoints)).toLocaleString('ja-JP')}`],
+    ['名声点', currentFame.toLocaleString('ja-JP'), `+${Math.max(0, int(reward.fame)).toLocaleString('ja-JP')} / 適用後 ${nextRank.grade}/Lv${nextRank.level}`],
+    ['事務所名声点', currentOfficeFame.toLocaleString('ja-JP'), `+${Math.max(0, int(reward.officeFame)).toLocaleString('ja-JP')} / 適用後 事務所Lv${nextOfficeLevel.level}`],
+    ['発芽率', `${currentGermination}%`, `適用後 ${nextGermination}%`],
+    ['報酬アイテム', `${itemCount}件`, '単価0で所持品へ追加']
+  ].map(([label, value, note]) => `<article><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small></article>`).join('');
+}
 function populateStateToDom() {
   $$('.bind').forEach((el) => setInputValue(el, getPath(state, el.dataset.path)));
   STAT_KEYS.forEach((key) => {
@@ -2580,6 +2704,26 @@ function getRankInfo(fame) {
   return current;
 }
 
+function getOfficeLevelInfo(fame) {
+  let current = OFFICE_LEVEL_TABLE[0];
+  OFFICE_LEVEL_TABLE.forEach((row) => {
+    if (int(fame) >= row.fame) current = row;
+  });
+  return current;
+}
+
+function syncOfficeLevel() {
+  const info = getOfficeLevelInfo(state.office.fame);
+  state.office.level = info.level;
+  return info;
+}
+
+function formatProgressNext(current, info, unit) {
+  if (info.next === null) return '最大値に到達';
+  const remaining = Math.max(0, info.next - int(current));
+  return `次まで ${remaining.toLocaleString('ja-JP')}${unit}`;
+}
+
 function speedChoiceFallback() {
   return state.combat.speedMode === 'min' ? 'min' : 'max';
 }
@@ -2629,6 +2773,7 @@ function getDerived() {
   const stats = getTotalStats();
   const bonuses = Object.fromEntries(STAT_KEYS.map((key) => [key, bonusOf(stats[key])]));
   const rank = getRankInfo(state.growth.fame);
+  const officeLevel = getOfficeLevelInfo(state.office.fame);
   const level = rank.level;
   const hp = stats.CON * 4 + level * 5;
   const mp = stats.POW * 2 + level * 5;
@@ -2640,13 +2785,14 @@ function getDerived() {
   const insanityMax = 5 + bonuses.POW;
   const speedChoices = getSpeedChoicesForBonus(bonuses.DEX);
   const speed = getSpeedExpression(bonuses.DEX, speedChoices, state.combat.speedDiceExtra);
-  return { stats, bonuses, rank, level, hp, mp, dodge, defense, hit, maxWeight, lightMax, insanityMax, speed };
+  return { stats, bonuses, rank, level, officeLevel, hp, mp, dodge, defense, hit, maxWeight, lightMax, insanityMax, speed };
 }
 
 function getTotals() {
   const weaponCost = state.equipment.weapons.reduce((sum, row) => sum + int(row.cost), 0);
   const armorCost = state.equipment.armors.reduce((sum, row) => sum + int(row.cost), 0);
   const itemCost = state.equipment.items.reduce((sum, row) => sum + int(row.cost) * Math.max(1, int(row.qty, 1)), 0);
+  const consumedItemCost = Math.max(0, int(state.equipment.consumedItemCost));
   const prostheticCost = state.equipment.prosthetics.reduce((sum, row) => sum + int(row.cost), 0);
   const equipmentUpgradeCost = (state.equipment.upgrades || []).reduce((sum, row) => sum + getEquipmentUpgradeCost(row), 0);
   const weaponWeight = state.equipment.weapons.reduce((sum, row) => sum + clampNumber(row.weight), 0);
@@ -2657,8 +2803,9 @@ function getTotals() {
   const passiveCost = state.skills.passives.reduce((sum, row) => sum + int(row.pointCost), 0);
   const enhanceCost = totalEnhancementCost();
   return {
-    moneyUsed: weaponCost + armorCost + itemCost + prostheticCost + equipmentUpgradeCost + enhanceCost,
-    equipmentCost: weaponCost + armorCost + itemCost + prostheticCost,
+    moneyUsed: weaponCost + armorCost + itemCost + consumedItemCost + prostheticCost + equipmentUpgradeCost + enhanceCost,
+    equipmentCost: weaponCost + armorCost + itemCost + consumedItemCost + prostheticCost,
+    consumedItemCost,
     equipmentUpgradeCost,
     enhanceCost,
     totalWeight: weaponWeight + armorWeight + itemWeight + prostheticWeight,
@@ -2668,8 +2815,32 @@ function getTotals() {
   };
 }
 
+function getDisplayCharacterName() {
+  return oneLine(state.profile.characterName);
+}
+
+function updateCharacterIdentity() {
+  const name = getDisplayCharacterName();
+  const displayName = name || '未設定';
+  const titleEl = $('#currentCharacterTitle');
+  if (titleEl) titleEl.textContent = `現在のキャラクター：${displayName}`;
+  document.title = name ? `LoMTRPG (${name})` : 'LoMTRPG キャラクリシート';
+}
+
+function updateOfficeLevelDisplay(info = getOfficeLevelInfo(state.office.fame)) {
+  const input = $('#officeLevel');
+  if (input) input.value = info.level;
+  const detail = $('#officeLevelDetail');
+  if (detail) {
+    detail.textContent = `事務所名声点 ${int(state.office.fame).toLocaleString('ja-JP')} / 事務所Lv${info.level}（${formatProgressNext(state.office.fame, info, '点')}）`;
+  }
+}
+
 function updateAll(shouldSave = true) {
   collectBoundInputs();
+  const officeLevelInfo = syncOfficeLevel();
+  updateCharacterIdentity();
+  updateOfficeLevelDisplay(officeLevelInfo);
   const specialtyBefore = $('#specialtyPassive').value;
   updateSpecialtyPassiveOptions();
   if (specialtyBefore && $('#specialtyPassive').value !== specialtyBefore) state.build.specialtyPassive = $('#specialtyPassive').value;
@@ -2685,6 +2856,7 @@ function updateAll(shouldSave = true) {
   updateJsonBox();
   refreshCombatSkillCostDisplays();
   updateBottomSkillBar();
+  updateRewardPreview();
   updateLibraryUi();
   if (shouldSave) scheduleSave();
 }
@@ -2771,7 +2943,8 @@ function updateDerivedCards() {
     ['光最大値', d.lightMax, '初期3 + 補正'],
     ['狂気点上限', d.insanityMax, '5 + POWボーナス'],
     ['速度', d.speed, formatSpeedChoiceSummary(d.bonuses.DEX)],
-    ['階級/レベル', `${d.rank.grade} / ${d.level}`, `名声点 ${int(state.growth.fame)}`]
+    ['階級/レベル', `${d.rank.grade} / ${d.level}`, `名声点 ${int(state.growth.fame)}（${formatProgressNext(state.growth.fame, d.rank, '点')}）`],
+    ['事務所Lv', d.officeLevel.level, `事務所名声 ${int(state.office.fame)}（${formatProgressNext(state.office.fame, d.officeLevel, '点')}）`]
   ];
   $('#derivedCards').innerHTML = cards.map(([label, value, formula]) => `<article class="derived-card"><span>${label}</span><strong>${value}</strong><small>${formula}</small></article>`).join('');
   $('#summaryGrade').textContent = d.rank.grade;
@@ -2831,6 +3004,10 @@ function formatSpeedChoiceSummary(dexBonus) {
 
 function updateInfoTables() {
   $('#rankTable').innerHTML = `<table class="info-table"><thead><tr><th>階級</th><th>Lv</th><th>必要名声</th></tr></thead><tbody>${RANK_TABLE.map((row) => `<tr><td>${row.grade}</td><td>${row.level}</td><td>${row.fame}</td></tr>`).join('')}</tbody></table>`;
+  const officeLevelTable = $('#officeLevelTable');
+  if (officeLevelTable) {
+    officeLevelTable.innerHTML = `<table class="info-table"><thead><tr><th>事務所Lv</th><th>必要事務所名声</th></tr></thead><tbody>${OFFICE_LEVEL_TABLE.map((row) => `<tr><td>${row.level}</td><td>${row.fame}</td></tr>`).join('')}</tbody></table>`;
+  }
   $('#costTable').innerHTML = `<table class="info-table"><thead><tr><th>能力値</th><th>ボーナス</th><th>1点費用</th></tr></thead><tbody>${ENHANCE_COST_TABLE.map((row) => `<tr><td>${row.min}～${row.max}</td><td>${row.bonus}</td><td>${formatMoney(row.cost)}</td></tr>`).join('')}</tbody></table>`;
   const totals = getTotals();
   const d = getDerived();
@@ -2845,6 +3022,8 @@ function updateInfoTables() {
       <tr><th>強化費</th><td>${formatMoney(totals.enhanceCost)}</td></tr>
       <tr><th>残金</th><td>${formatMoney(cashLeft)}</td></tr>
       <tr><th>技能点</th><td>${int(state.growth.skillPointStart)} / 使用 ${totals.skillUsed} / 残 ${skillLeft}</td></tr>
+      <tr><th>名声</th><td>${d.rank.grade} / Lv${d.level}（${formatProgressNext(state.growth.fame, d.rank, '点')}）</td></tr>
+      <tr><th>事務所名声</th><td>事務所Lv${d.officeLevel.level}（${formatProgressNext(state.office.fame, d.officeLevel, '点')}）</td></tr>
       <tr><th>重量</th><td>${totals.totalWeight.toLocaleString('ja-JP')} / ${d.maxWeight} (${weightState.label})</td></tr>
     </tbody></table>`;
 }
@@ -3039,6 +3218,9 @@ function saveCurrentCharacterToLibrary() {
     toast('先に保存庫でログインしてください');
     return;
   }
+
+  collectBoundInputs();
+  syncOfficeLevel();
 
   const now = new Date().toISOString();
   if (!Array.isArray(account.characters)) account.characters = [];
@@ -3539,7 +3721,7 @@ ${skills}
 ${passives}
 
 ■事務所
-事務所名：${state.office.name || '-'}　代表：${state.office.leader || '-'}　Lv:${int(state.office.level, 1)}　名声:${int(state.office.fame)}
+事務所名：${state.office.name || '-'}　代表：${state.office.leader || '-'}　Lv:${d.officeLevel.level}　名声:${int(state.office.fame)}
 戦術スキル：
 ${tactics}
 メンバー：${state.office.members || '-'}
@@ -3654,6 +3836,23 @@ function oneLine(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
+function ccfoliaSignedTerm(value, fallback = 0) {
+  const n = int(value, fallback);
+  return n >= 0 ? `+${n}` : String(n);
+}
+
+function buildCcfoliaWeaponCommandLines() {
+  return state.equipment.weapons
+    .filter((row) => oneLine(row.name))
+    .flatMap((row) => {
+      const name = oneLine(row.name);
+      return [
+        `2d6${ccfoliaSignedTerm(row.hit)}+{HIT}+{POWER} （${name}）命中判定`,
+        `2d6${ccfoliaSignedTerm(row.power)}+{POWER} （${name}）ダメージ判定`
+      ];
+    });
+}
+
 function normalizeColor(value) {
   const color = String(value || '').trim();
   return /^#[0-9a-f]{6}$/i.test(color) ? color.toUpperCase() : '#DFB85F';
@@ -3672,7 +3871,7 @@ function buildTekeyStatuses() {
     { name: '光', value: int(state.combat.lightCurrent), max: d.lightMax, checkbox: false, allowOver: false },
     { name: 'PE', value: int(state.emotion.pe), max: null, checkbox: false, allowOver: false },
     { name: 'NE', value: int(state.emotion.ne), max: null, checkbox: false, allowOver: false },
-    { name: '感情レベル', value: int(state.emotion.level, 1), max: Math.max(1, int(state.office.level, 1)), checkbox: false, allowOver: false },
+    { name: '感情レベル', value: int(state.emotion.level, 1), max: Math.max(1, d.officeLevel.level), checkbox: false, allowOver: false },
     { name: '狂気点', value: int(state.mind.insanityCurrent), max: d.insanityMax, checkbox: false, allowOver: false },
     { name: 'ねじれ点', value: int(state.mind.twistPoint), max: 5, checkbox: false, allowOver: false },
     { name: 'パワｌ', value: int(state.conditions.power), max: null, checkbox: false, allowOver: false },
@@ -3843,7 +4042,7 @@ function buildCcfoliaStatuses() {
     ccfoliaStatus('光', int(state.combat.lightCurrent), d.lightMax),
     ccfoliaStatus('PE', int(state.emotion.pe), Math.max(0, int(state.emotion.pe))),
     ccfoliaStatus('NE', int(state.emotion.ne), Math.max(0, int(state.emotion.ne))),
-    ccfoliaStatus('感情レベル', int(state.emotion.level, 1), 5),
+    ccfoliaStatus('感情レベル', int(state.emotion.level, 1), Math.max(1, d.officeLevel.level)),
     ccfoliaStatus('狂気点', int(state.mind.insanityCurrent), d.insanityMax),
     ccfoliaStatus('ねじれ点', int(state.mind.twistPoint), 5),
     ccfoliaStatus('混乱', state.conditions.confused ? 1 : 0, 1),
@@ -3926,15 +4125,6 @@ function buildCcfoliaMemo() {
     .filter((row) => row.name || row.memo)
     .map((row) => `・${row.name || '無名アイテム'} x${row.qty || 1} 重量:${row.weight || 0} 価格:${formatMoney(row.cost || 0)} ${oneLine(row.memo)}`)
     .join('\n') || '・なし';
-  const prosthetics = state.equipment.prosthetics
-    .filter((row) => row.name || row.memo)
-    .map((row) => `・${row.name || '無名義体'} [${row.location || '-'}] ${row.stat || '-'} 重量:${row.weight || 0} 価格:${formatMoney(row.cost || 0)} ${oneLine(row.memo)}`)
-    .join('\n') || '・なし';
-  const equipmentUpgrades = (state.equipment.upgrades || [])
-    .filter(hasEquipmentUpgradeContent)
-    .map(formatEquipmentUpgradeLine)
-    .join('\n') || '・なし';
-  const enhancements = buildEnhancementLines(true);
   const combatSkills = state.skills.combat
     .filter(hasCombatSkillContent)
     .map(formatCombatSkillLine)
@@ -3950,16 +4140,11 @@ function buildCcfoliaMemo() {
 
   return [
     '【LoMTRPG ココフォリア用メモ】',
-    `名前:${state.profile.characterName || '未設定'} / PL:${state.profile.playerName || '未設定'}`,
-    `年齢:${state.profile.age || '-'} / 性別:${state.profile.gender || '-'} / 役割:${state.profile.role || '-'}`,
-    `出身:${ORIGINS[state.build.origin]?.label || '-'} / 得意分野:${specialty.label} / 階級:${d.rank.grade} Lv:${d.level}`,
+    `階級:${d.rank.grade} Lv:${d.level}`,
     `能力値:${statLine}`,
     `副能力値:HP${d.hp} MP${d.mp} 光${int(state.combat.lightCurrent)}/${d.lightMax} 速度${d.speed}（${formatSpeedChoiceSummary(d.bonuses.DEX)}） 命中${d.hit} 回避${d.dodge} 防御${d.defense}`,
-    `感情:Lv${int(state.emotion.level, 1)} PE${int(state.emotion.pe)} NE${int(state.emotion.ne)} / 狂気点${int(state.mind.insanityCurrent)}/${d.insanityMax} / ねじれ点${int(state.mind.twistPoint)}`,
-    `状態:${state.conditions.confused ? '混乱あり' : '混乱なし'} / ${buildConditionLine() || '状態異常なし'}`,
     '',
     '■パッシブ詳細',
-    `得意分野:${specialty.label}`,
     `能力値補正:${formatSpecialtyMods(specialty)}`,
     `固有パッシブ:${specialty.fixed.name} - ${oneLine(specialty.fixed.text)}`,
     `選択パッシブ:${selected.name} - ${oneLine(selected.text)}`,
@@ -3968,10 +4153,6 @@ function buildCcfoliaMemo() {
     'その他パッシブ:',
     extraPassives,
     '',
-    '■光の種',
-    `${int(state.lightSeed.number)}. ${state.lightSeed.text || LIGHT_SEEDS[int(state.lightSeed.number) - 1] || '-'} / 発芽率${int(state.lightSeed.germinationRate)}%`,
-    state.lightSeed.memo || '-',
-    '',
     '■装備',
     '武器:',
     weapons,
@@ -3979,38 +4160,26 @@ function buildCcfoliaMemo() {
     armors,
     'アイテム:',
     items,
-    '義体:',
-    prosthetics,
-    '装備強化:',
-    equipmentUpgrades,
-    '',
-    '強化施術:',
-    enhancements,
     '',
     '■戦闘技能',
     combatSkills,
     '',
-    '■事務所・プロフィール',
+    '■事務所',
     `事務所:${state.office.name || '-'} / 代表:${state.office.leader || '-'}`,
     '戦術スキル:',
     tactics,
-    `経歴表:${state.profile.fixerHistory || '-'}`,
-    `経歴:${state.profile.history || '-'}`,
-    `外見・性格:${state.profile.appearance || '-'}`,
-    `関係者・目的:${state.profile.bonds || '-'}`,
-    `画像URL:${state.tekey.imageUrl || '-'}`,
     '',
     '■リソース',
     `所持金:${formatMoney(state.growth.cashStart)} / 使用:${formatMoney(totals.moneyUsed)} / 残:${formatMoney(cashLeft)}`,
-    `装備費:${formatMoney(totals.equipmentCost)} / 装備強化費:${formatMoney(totals.equipmentUpgradeCost)} / 能力値強化費:${formatMoney(totals.enhanceCost)}`,
+    `装備費:${formatMoney(totals.equipmentCost)}`,
     `技能点:${int(state.growth.skillPointStart)} / 使用:${totals.skillUsed} / 残:${skillLeft}`,
     `重量:${totals.totalWeight.toLocaleString('ja-JP')}/${d.maxWeight}（${getWeightPenalty(totals.totalWeight, d.maxWeight).label}）`
   ].join('\n');
 }
-
 function buildCcfoliaCommands() {
   const specialty = SPECIALTIES[state.build.specialty] || SPECIALTIES.combat;
   const selected = getSelectedSpecialtyPassive();
+  const weaponCommandLines = buildCcfoliaWeaponCommandLines();
   const passiveLines = [
     `固有パッシブ ${specialty.fixed.name}: ${oneLine(specialty.fixed.text)}`,
     `選択パッシブ ${selected.name}: ${oneLine(selected.text)}`
@@ -4018,28 +4187,17 @@ function buildCcfoliaCommands() {
   if (specialty.fixed.name === '弱点把握') passiveLines.push('1d6 弱点把握（1:斬撃耐性/2:斬撃混乱耐性/3:貫通耐性/4:貫通混乱耐性/5:打撃耐性/6:打撃混乱耐性）');
 
   return [
-    'HP {HP}/{HPMAX}',
-    'MP {MP}/{MPMAX}',
-    '光 {LIGHT}/{LIGHTMAX}',
-    '狂気点 {INSANITY}/{INSANITYMAX}',
-    'ねじれ点 {DISTORTION}',
-    '感情レベル {EMOTION} / PE {PE} / NE {NE}',
-    '速度 {SPEED}',
-    '状態 パワー{POWER}/クイック{QUICK}/忍耐{ENDURANCE}/保護{PROTECTION}/脆弱{FRAGILE}/出血{BLEED}/火傷{BURN}/麻痺{PARALYSIS}',
     '2d6+{STRB}+{LEVEL} 筋力判定',
     '2d6+{STRB}+{LEVEL} 水泳判定',
     '2d6+{STRB}+{LEVEL} 跳躍判定',
     '2d6+{DEXB}+{LEVEL} 隠密判定',
-    '2d6+{DEXB}+{LEVEL} 回避判定',
     '2d6+{DEXB}+{LEVEL} 登攀判定',
     '2d6+{DEXB}+{LEVEL} 逃走判定',
     '2d6+{DEXB}+{LEVEL} 逃走妨害判定',
     '2d6+{AGEB}+{LEVEL} 応急手当判定',
     '2d6+{AGEB}+{LEVEL} 隠蔽判定',
     '2d6+{AGEB}+{LEVEL} 開錠判定',
-    '2d6+{AGEB}+{LEVEL} 命中判定',
     '2d6+{CONB}+{LEVEL} 生死判定',
-    '2d6+{CONB}+{LEVEL} 防御判定',
     '2d6+{CONB}+{LEVEL} 生命抵抗力判定',
     '2d6+{POWB} 精神力判定',
     '2d6+{INTB}+{LEVEL} 追跡判定',
@@ -4053,9 +4211,9 @@ function buildCcfoliaCommands() {
     '2d6+{APPB}+{LEVEL} 交渉判定',
     '2d6+{APPB} 対話判定',
     '2d6+{GERMINATIONB} ねじれ判定',
-    '2d6+{HIT} 命中判定',
-    '2d6+{DEFENSE} 防御判定',
-    '2d6+{DODGE} 回避判定',
+    ...weaponCommandLines,
+    '2d6+{DEFENSE}+{ENDURANCE} 防御判定',
+    '2d6+{DODGE}+{ENDURANCE} 回避判定',
     ...passiveLines,
     '（セリフ）'
   ].join('\n');
@@ -4411,6 +4569,8 @@ function hookEvents() {
   $('#copyShareCode').addEventListener('click', () => copyText(buildShareImportCodeForState(state), '共有コードをコピーしました'));
   $('#importShareCode').addEventListener('click', importShareCode);
   $('#savedCharacterList').addEventListener('click', handleSavedCharacterAction);
+  $('#addRewardItem').addEventListener('click', () => addDynamicRow('rewardItems'));
+  $('#applyRewards').addEventListener('click', applyRewards);
   $('#equipmentCatalog').addEventListener('click', (event) => {
     const button = event.target.closest('[data-purchase-id]');
     if (button) purchaseCatalogEntry(button.dataset.purchaseId);

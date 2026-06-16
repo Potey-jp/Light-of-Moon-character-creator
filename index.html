@@ -18,6 +18,7 @@
       <div>
         <p class="eyebrow">Light of Moon TRPG / Character Builder</p>
         <h1>LoMTRPG キャラクリシート</h1>
+        <p id="currentCharacterTitle" class="current-character-title">現在のキャラクター：未設定</p>
         <p class="lead">出身ダイス、得意分野、副能力値、名声・階級、光の種、装備費用、技能点を自動計算する静的Webツールです。</p>
       </div>
       <div class="hero-actions">
@@ -50,6 +51,7 @@
       <button type="button" class="tab" data-tab="equipment-upgrades">装備強化</button>
       <button type="button" class="tab" data-tab="skills">技能</button>
       <button type="button" class="tab" data-tab="office">事務所</button>
+      <button type="button" class="tab" data-tab="rewards">報酬</button>
       <button type="button" class="tab" data-tab="library">保存庫</button>
       <button type="button" class="tab" data-tab="output">出力</button>
     </nav>
@@ -156,6 +158,7 @@
             <div class="card-title"><h2>成長・費用メモ</h2><span class="hint">名声点と強化費の確認用</span></div>
             <div class="grid three">
               <div class="info-box"><h3>階級表</h3><div id="rankTable"></div></div>
+              <div class="info-box"><h3>事務所レベル表</h3><div id="officeLevelTable"></div></div>
               <div class="info-box"><h3>強化費用表</h3><div id="costTable"></div></div>
               <div class="info-box"><h3>資源</h3><div id="resourceSummary"></div></div>
             </div>
@@ -330,13 +333,14 @@
       <section id="tab-office" class="tab-panel">
         <div class="grid two">
           <section class="card">
-            <div class="card-title"><h2>フィクサー事務所</h2><span class="hint">作成時の事務所レベルは1</span></div>
+            <div class="card-title"><h2>フィクサー事務所</h2><span class="hint">事務所名声点から自動計算</span></div>
             <div class="form-grid">
               <label>事務所名<input id="officeName" class="bind" data-path="office.name" type="text" /></label>
               <label>代表<input id="officeLeader" class="bind" data-path="office.leader" type="text" /></label>
-              <label>事務所レベル<input id="officeLevel" class="bind" data-path="office.level" type="number" min="1" step="1" /></label>
+              <label>事務所レベル<input id="officeLevel" class="bind" data-path="office.level" type="number" min="1" max="10" step="1" readonly /></label>
               <label>事務所名声点<input id="officeFame" class="bind" data-path="office.fame" type="number" min="0" step="1" /></label>
             </div>
+            <p id="officeLevelDetail" class="note"></p>
             <label class="full-label">所属メンバー<textarea id="officeMembers" class="bind" data-path="office.members" rows="5"></textarea></label>
           </section>
           <section class="card">
@@ -348,6 +352,37 @@
             <label class="full-label">事務所メモ<textarea id="officeMemo" class="bind" data-path="office.memo" rows="6"></textarea></label>
           </section>
         </div>
+      </section>
+
+
+      <section id="tab-rewards" class="tab-panel">
+        <div class="grid two">
+          <section class="card">
+            <div class="card-title"><h2>シナリオ報酬</h2><span class="hint">適用すると現在値へ加算します</span></div>
+            <div class="form-grid compact">
+              <label>獲得した眼<input id="rewardCash" class="bind" data-path="rewards.cash" type="number" min="0" step="1000" /></label>
+              <label>獲得技能点<input id="rewardSkillPoints" class="bind" data-path="rewards.skillPoints" type="number" min="0" step="10" /></label>
+              <label>獲得名声点<input id="rewardFame" class="bind" data-path="rewards.fame" type="number" min="0" step="1" /></label>
+              <label>事務所名声点<input id="rewardOfficeFame" class="bind" data-path="rewards.officeFame" type="number" min="0" step="1" /></label>
+              <label>発芽率<input id="rewardGerminationRate" class="bind" data-path="rewards.germinationRate" type="number" min="0" max="100" step="1" /></label>
+            </div>
+            <div class="button-row">
+              <button type="button" id="applyRewards" class="primary">報酬を適用</button>
+            </div>
+            <p class="note">適用後、このタブの数値と報酬アイテム欄は初期値に戻ります。報酬アイテムは単価0で所持品に追加されます。</p>
+          </section>
+
+          <section class="card">
+            <div class="card-title"><h2>適用先プレビュー</h2><span class="hint">現在値に加算されます</span></div>
+            <div id="rewardPreview" class="mini-grid"></div>
+          </section>
+        </div>
+
+        <section class="card">
+          <div class="card-title"><h2>報酬アイテム</h2><span class="hint">シナリオ報酬で得たアイテム</span></div>
+          <div class="button-row"><button type="button" id="addRewardItem" class="ghost">+ 報酬アイテム</button></div>
+          <div class="table-wrap"><table class="sheet-table editable"><thead><tr><th>名称</th><th>個数</th><th>単重量</th><th>効果・メモ</th><th></th></tr></thead><tbody id="rewardItemRows"></tbody></table></div>
+        </section>
       </section>
 
       <section id="tab-library" class="tab-panel">

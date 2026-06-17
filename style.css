@@ -103,6 +103,7 @@ button.ghost { background: rgba(255,255,255,.05); }
 button.danger { border-color: rgba(216,79,91,.65); color: #ffd6da; background: rgba(216,79,91,.12); }
 button.small { padding: 7px 11px; font-size: .9rem; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.row-actions .refund-status { flex-basis: 100%; color: var(--muted); font-size: .74rem; line-height: 1.35; }
 .file-button input { display: none; }
 
 .summary-strip {
@@ -445,6 +446,7 @@ textarea { resize: vertical; line-height: 1.65; }
 }
 .skill-table { min-width: 1220px; }
 .prosthetic-table { min-width: 980px; }
+.warehouse-table { min-width: 960px; }
 .upgrade-table { min-width: 1420px; }
 .upgrade-table td > small {
   display: block;

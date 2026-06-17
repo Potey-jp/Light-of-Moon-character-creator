@@ -48,6 +48,7 @@
       <button type="button" class="tab" data-tab="enhancement">強化施術</button>
       <button type="button" class="tab" data-tab="seed">光の種</button>
       <button type="button" class="tab" data-tab="equipment">装備</button>
+      <button type="button" class="tab" data-tab="warehouse">倉庫</button>
       <button type="button" class="tab" data-tab="equipment-upgrades">装備強化</button>
       <button type="button" class="tab" data-tab="skills">技能</button>
       <button type="button" class="tab" data-tab="office">事務所</button>
@@ -248,15 +249,15 @@
       <section id="tab-equipment" class="tab-panel">
         <section class="card">
           <div class="card-title"><h2>武器</h2><button type="button" id="addWeapon" class="ghost small">+ 武器</button></div>
-          <div class="table-wrap"><table class="sheet-table editable"><thead><tr><th>名称</th><th>ランク</th><th>属性</th><th>威力</th><th>命中補正</th><th>重量</th><th>価格</th><th>メモ</th><th></th></tr></thead><tbody id="weaponRows"></tbody></table></div>
+          <div class="table-wrap"><table class="sheet-table editable"><thead><tr><th>名称</th><th>ランク</th><th>属性</th><th>威力</th><th>命中補正</th><th>重量</th><th>価格</th><th>メモ</th><th>操作</th></tr></thead><tbody id="weaponRows"></tbody></table></div>
         </section>
         <section class="card">
           <div class="card-title"><h2>防具</h2><button type="button" id="addArmor" class="ghost small">+ 防具</button></div>
-          <div class="table-wrap"><table class="sheet-table editable armor-table"><thead><tr><th>名称</th><th>斬撃</th><th>貫通</th><th>打撃</th><th>重量</th><th>価格</th><th>メモ</th><th></th></tr></thead><tbody id="armorRows"></tbody></table></div>
+          <div class="table-wrap"><table class="sheet-table editable armor-table"><thead><tr><th>名称</th><th>斬撃</th><th>貫通</th><th>打撃</th><th>重量</th><th>価格</th><th>メモ</th><th>操作</th></tr></thead><tbody id="armorRows"></tbody></table></div>
         </section>
         <section class="card">
           <div class="card-title"><h2>アイテム</h2><button type="button" id="addItem" class="ghost small">+ アイテム</button></div>
-          <div class="table-wrap"><table class="sheet-table editable"><thead><tr><th>名称</th><th>個数</th><th>単重量</th><th>単価</th><th>効果・メモ</th><th></th></tr></thead><tbody id="itemRows"></tbody></table></div>
+          <div class="table-wrap"><table class="sheet-table editable"><thead><tr><th>名称</th><th>個数</th><th>単重量</th><th>単価</th><th>効果・メモ</th><th>操作</th></tr></thead><tbody id="itemRows"></tbody></table></div>
           <p class="note">重量が最大重量を超えると、判定ペナルティ目安を自動表示します。</p>
         </section>
         <section class="card">
@@ -270,6 +271,26 @@
           </div>
           <p class="note">購入ボタンを押すと上の所持品欄へ追加され、価格と重量が自動集計されます。防具の物理耐性・混乱耐性は「防具耐性セット」1行にまとめて反映されます。卓やVCの裁定に合わせて、追加後の数値やメモは編集できます。</p>
           <div id="equipmentCatalog" class="purchase-catalog"></div>
+        </section>
+      </section>
+
+      <section id="tab-warehouse" class="tab-panel">
+        <section class="card">
+          <div class="card-title"><h2>倉庫</h2><span class="hint">シナリオへ持っていかない購入済み装備</span></div>
+          <p class="note">保管中の装備は重量に含まれませんが、購入済みとして使用済み眼には含まれます。購入から1時間以内のものだけ返金削除できます。</p>
+          <p class="note">デバッグ: このタブを開いた状態で Shift キーを押しながら DELETE と入力すると、倉庫内の返金削除ボタンが再表示されます。</p>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>倉庫の武器</h2><span class="hint">装備ボタンで装備欄へ戻します</span></div>
+          <div class="table-wrap"><table class="sheet-table editable warehouse-table"><thead><tr><th>名称</th><th>ランク</th><th>属性</th><th>威力</th><th>命中補正</th><th>重量</th><th>価格</th><th>メモ</th><th>操作</th></tr></thead><tbody id="warehouseWeaponRows"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>倉庫の防具</h2><span class="hint">斬撃・貫通・打撃ごとに保管</span></div>
+          <div class="table-wrap"><table class="sheet-table editable armor-table warehouse-table"><thead><tr><th>名称</th><th>斬撃</th><th>貫通</th><th>打撃</th><th>重量</th><th>価格</th><th>メモ</th><th>操作</th></tr></thead><tbody id="warehouseArmorRows"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title"><h2>倉庫のアイテム</h2><span class="hint">装備欄に戻すと使用できます</span></div>
+          <div class="table-wrap"><table class="sheet-table editable warehouse-table"><thead><tr><th>名称</th><th>個数</th><th>単重量</th><th>単価</th><th>効果・メモ</th><th>操作</th></tr></thead><tbody id="warehouseItemRows"></tbody></table></div>
         </section>
       </section>
 

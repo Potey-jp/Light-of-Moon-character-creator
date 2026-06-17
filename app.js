@@ -1340,6 +1340,9 @@ const ACCOUNT_STORAGE_KEY = 'lomtrpg-character-creator-accounts';
 const ACTIVE_ACCOUNT_KEY = 'lomtrpg-character-creator-active-account';
 const SHARE_CODE_PREFIX = 'LOMTRPG-CHARACTER-CODE-V2';
 const SHARE_CODE_SUFFIX = 'END-LOMTRPG-CHARACTER-CODE';
+const REFUND_WINDOW_MS = 60 * 60 * 1000;
+const ACTIVE_TO_WAREHOUSE = { weapons: 'warehouseWeapons', armors: 'warehouseArmors', items: 'warehouseItems' };
+const WAREHOUSE_TO_ACTIVE = { warehouseWeapons: 'weapons', warehouseArmors: 'armors', warehouseItems: 'items' };
 
 const DEFAULT_STATE = {
   meta: { libraryId: '', librarySavedAt: '', importedFromShare: false, sharedBy: null, sharedAt: '' },
@@ -1369,6 +1372,7 @@ const DEFAULT_STATE = {
     prosthetics: [],
     upgrades: []
   },
+  warehouse: { weapons: [], armors: [], items: [] },
   skills: {
     combat: [
       { kind: '基本付与', name: 'ダイス追加', sl: 1, lightCost: '1', pointCost: 0, requirement: '初期習得', effects: [], catalogId: 'dice-add:sl1', catalogEffectId: 'dice-add', memo: '任意属性のダイスを1つ追加。全ダイス達成値-2、全ダイス効力値1/2。' },
@@ -1393,6 +1397,8 @@ const DEFAULT_STATE = {
 
 let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
 let saveTimer = null;
+let warehouseRefundDebugUnlocked = false;
+let warehouseDebugBuffer = '';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -1455,7 +1461,33 @@ function normalizeArmorRow(row) {
     bluntPanic: row?.bluntPanic || fallback,
     weight: row?.weight ?? 0,
     cost: row?.cost ?? 0,
-    memo: row?.memo || ''
+    memo: row?.memo || '',
+    purchasedAt: row?.purchasedAt || ''
+  };
+}
+
+function normalizeWeaponRow(row) {
+  return {
+    name: row?.name || '',
+    rank: row?.rank || 'D',
+    type: row?.type || '斬撃',
+    power: row?.power || '',
+    hit: row?.hit || '',
+    weight: row?.weight ?? 0,
+    cost: row?.cost ?? 0,
+    memo: row?.memo || '',
+    purchasedAt: row?.purchasedAt || ''
+  };
+}
+
+function normalizeItemRow(row) {
+  return {
+    name: row?.name || '',
+    qty: Math.max(1, int(row?.qty, 1)),
+    weight: row?.weight ?? 0,
+    cost: row?.cost ?? 0,
+    memo: row?.memo || '',
+    purchasedAt: row?.purchasedAt || ''
   };
 }
 
@@ -1496,7 +1528,8 @@ function createBlankArmorRow(name = '') {
     bluntPanic: '脆弱',
     weight: 0,
     cost: 0,
-    memo: ''
+    memo: '',
+    purchasedAt: ''
   };
 }
 
@@ -1527,6 +1560,119 @@ function isBlankArmorRow(row) {
     && int(armor.cost) === 0
     && clampNumber(armor.weight) === 0
     && ARMOR_RESISTANCE_FIELDS.every((field) => armor[field.key] === '脆弱');
+}
+
+
+function isBlankWeaponRow(row) {
+  const weapon = normalizeWeaponRow(row);
+  return !weapon.name
+    && !weapon.memo
+    && !weapon.power
+    && !weapon.hit
+    && int(weapon.cost) === 0
+    && clampNumber(weapon.weight) === 0;
+}
+
+function isBlankItemRow(row) {
+  const item = normalizeItemRow(row);
+  return !item.name
+    && !item.memo
+    && int(item.cost) === 0
+    && clampNumber(item.weight) === 0
+    && int(item.qty, 1) <= 1;
+}
+
+function equipmentKindFromArrayName(name) {
+  return WAREHOUSE_TO_ACTIVE[name] || name;
+}
+
+function isTrackedEquipmentArray(name) {
+  return ['weapons', 'armors', 'items', 'warehouseWeapons', 'warehouseArmors', 'warehouseItems'].includes(name);
+}
+
+function isBlankEquipmentRow(arrayName, row) {
+  const kind = equipmentKindFromArrayName(arrayName);
+  if (kind === 'weapons') return isBlankWeaponRow(row);
+  if (kind === 'armors') return isBlankArmorRow(row);
+  if (kind === 'items') return isBlankItemRow(row);
+  return false;
+}
+
+function equipmentRowCost(arrayName, row) {
+  const kind = equipmentKindFromArrayName(arrayName);
+  if (kind === 'items') return int(row?.cost) * Math.max(1, int(row?.qty, 1));
+  return int(row?.cost);
+}
+
+function ensurePurchaseMetadata(row, arrayName, force = false) {
+  if (!row || !isTrackedEquipmentArray(arrayName)) return row;
+  if (!force && isBlankEquipmentRow(arrayName, row)) return row;
+  if (force || !row.purchasedAt) row.purchasedAt = new Date().toISOString();
+  return row;
+}
+
+function stampPurchasedRow(row, arrayName) {
+  const copy = structuredCloneSafe(row);
+  ensurePurchaseMetadata(copy, arrayName, true);
+  return copy;
+}
+
+function purchaseTimestamp(row) {
+  const time = Date.parse(row?.purchasedAt || '');
+  return Number.isFinite(time) ? time : null;
+}
+
+function refundRemainingMs(row) {
+  const time = purchaseTimestamp(row);
+  if (time === null) return -1;
+  return REFUND_WINDOW_MS - (Date.now() - time);
+}
+
+function isRefundWindowOpen(row) {
+  return refundRemainingMs(row) > 0;
+}
+
+function canShowRefundDelete(arrayName, row) {
+  if (isBlankEquipmentRow(arrayName, row)) return true;
+  if (isRefundWindowOpen(row)) return true;
+  return Boolean(WAREHOUSE_TO_ACTIVE[arrayName] && warehouseRefundDebugUnlocked);
+}
+
+function refundStatusText(arrayName, row) {
+  if (isBlankEquipmentRow(arrayName, row)) return '';
+  const remaining = refundRemainingMs(row);
+  if (remaining > 0) return `返金可: 残り${Math.ceil(remaining / 60000)}分`;
+  if (WAREHOUSE_TO_ACTIVE[arrayName] && warehouseRefundDebugUnlocked) return 'デバッグ返金可';
+  return '返金期限切れ';
+}
+
+function ensureWarehouseState(target = state) {
+  if (!target.warehouse || typeof target.warehouse !== 'object') target.warehouse = structuredCloneSafe(DEFAULT_STATE.warehouse);
+  if (!Array.isArray(target.warehouse.weapons)) target.warehouse.weapons = [];
+  if (!Array.isArray(target.warehouse.armors)) target.warehouse.armors = [];
+  if (!Array.isArray(target.warehouse.items)) target.warehouse.items = [];
+  return target.warehouse;
+}
+
+function normalizeEquipmentCollections(character) {
+  ensureWarehouseState(character);
+  character.equipment.weapons = (Array.isArray(character.equipment?.weapons) ? character.equipment.weapons : [])
+    .map(normalizeWeaponRow)
+    .map((row) => ensurePurchaseMetadata(row, 'weapons'));
+  character.equipment.armors = mergeCatalogArmorRows(Array.isArray(character.equipment?.armors) ? character.equipment.armors : [])
+    .map((row) => ensurePurchaseMetadata(row, 'armors'));
+  character.equipment.items = (Array.isArray(character.equipment?.items) ? character.equipment.items : [])
+    .map(normalizeItemRow)
+    .map((row) => ensurePurchaseMetadata(row, 'items'));
+  character.warehouse.weapons = character.warehouse.weapons
+    .map(normalizeWeaponRow)
+    .map((row) => ensurePurchaseMetadata(row, 'warehouseWeapons'));
+  character.warehouse.armors = character.warehouse.armors
+    .map(normalizeArmorRow)
+    .map((row) => ensurePurchaseMetadata(row, 'warehouseArmors'));
+  character.warehouse.items = character.warehouse.items
+    .map(normalizeItemRow)
+    .map((row) => ensurePurchaseMetadata(row, 'warehouseItems'));
 }
 
 function isOfficialArmorCatalogRow(row) {
@@ -1655,9 +1801,7 @@ function mergeDefaults(input) {
   delete merged.build.specialtyPassiveCustom;
   delete merged.build.specialtyPassiveCustomText;
   if (!Array.isArray(merged.combat.speedChoices)) merged.combat.speedChoices = [];
-  if (Array.isArray(merged.equipment?.armors)) {
-    merged.equipment.armors = mergeCatalogArmorRows(merged.equipment.armors);
-  }
+  normalizeEquipmentCollections(merged);
   if (Array.isArray(merged.equipment?.prosthetics)) {
     merged.equipment.prosthetics = merged.equipment.prosthetics.map(normalizeProstheticRow);
   }
@@ -1762,56 +1906,84 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 }
 
-function renderArmorResistanceGroup(index, mainField, panicField) {
+function renderArmorResistanceGroup(arrayName, index, mainField, panicField) {
   return `
     <div class="armor-resistance-group">
       <label class="armor-resistance-field armor-resistance-field-physical">
         <span>耐性</span>
-        <select data-array="armors" data-index="${index}" data-field="${mainField}">${createOptions(RESISTANCES, state.equipment.armors[index]?.[mainField])}</select>
+        <select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="${mainField}">${createOptions(RESISTANCES, getArrayByName(arrayName)[index]?.[mainField])}</select>
       </label>
       <label class="armor-resistance-field armor-resistance-field-panic">
         <span>混乱耐性</span>
-        <select data-array="armors" data-index="${index}" data-field="${panicField}">${createOptions(RESISTANCES, state.equipment.armors[index]?.[panicField])}</select>
+        <select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="${panicField}">${createOptions(RESISTANCES, getArrayByName(arrayName)[index]?.[panicField])}</select>
       </label>
     </div>
   `;
 }
 
+function renderRefundStatus(arrayName, row) {
+  const text = refundStatusText(arrayName, row);
+  return text ? `<small class="refund-status">${escapeHtml(text)}</small>` : '';
+}
+
+function renderEquipmentActions(arrayName, index, row, options = {}) {
+  const stored = Boolean(WAREHOUSE_TO_ACTIVE[arrayName]);
+  const blank = isBlankEquipmentRow(arrayName, row);
+  const buttons = [];
+  if (options.allowUse && !blank) buttons.push(`<button type="button" class="primary small" data-use-item="${index}">使用</button>`);
+  if (!blank && stored) buttons.push(`<button type="button" class="primary small" data-equip-equipment="${escapeHtml(arrayName)}" data-index="${index}">装備</button>`);
+  if (!blank && !stored) buttons.push(`<button type="button" class="ghost small" data-store-equipment="${escapeHtml(arrayName)}" data-index="${index}">保管</button>`);
+  if (canShowRefundDelete(arrayName, row)) buttons.push(`<button type="button" class="danger small" data-remove="${escapeHtml(arrayName)}" data-index="${index}">返金削除</button>`);
+  return `<div class="row-actions">${buttons.join('')}${renderRefundStatus(arrayName, row)}</div>`;
+}
+
+function renderWeaponCells(row, index, arrayName) {
+  const weapon = normalizeWeaponRow(row);
+  return `
+    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="name" value="${escapeHtml(weapon.name)}" /></td>
+    <td><select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="rank">${createOptions(WEAPON_RANKS, weapon.rank)}</select></td>
+    <td><select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="type">${createOptions(ATTACK_TYPES, weapon.type)}</select></td>
+    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="power" value="${escapeHtml(weapon.power)}" /></td>
+    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="hit" value="${escapeHtml(weapon.hit)}" /></td>
+    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="weight" value="${weapon.weight ?? 0}" /></td>
+    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="cost" value="${weapon.cost ?? 0}" /></td>
+    <td><textarea data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="memo">${escapeHtml(weapon.memo)}</textarea></td>
+    <td>${renderEquipmentActions(arrayName, index, weapon)}</td>
+  `;
+}
+
+function renderArmorCells(row, index, arrayName) {
+  const armor = normalizeArmorRow(row);
+  getArrayByName(arrayName)[index] = armor;
+  return `
+    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="name" value="${escapeHtml(armor.name)}" /></td>
+    <td>${renderArmorResistanceGroup(arrayName, index, 'slash', 'slashPanic')}</td>
+    <td>${renderArmorResistanceGroup(arrayName, index, 'pierce', 'piercePanic')}</td>
+    <td>${renderArmorResistanceGroup(arrayName, index, 'blunt', 'bluntPanic')}</td>
+    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="weight" value="${armor.weight ?? 0}" /></td>
+    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="cost" value="${armor.cost ?? 0}" /></td>
+    <td><textarea data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="memo">${escapeHtml(armor.memo)}</textarea></td>
+    <td>${renderEquipmentActions(arrayName, index, armor)}</td>
+  `;
+}
+
+function renderItemCells(row, index, arrayName, options = {}) {
+  const item = normalizeItemRow(row);
+  return `
+    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}" /></td>
+    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="qty" value="${item.qty ?? 1}" /></td>
+    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="weight" value="${item.weight ?? 0}" /></td>
+    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="cost" value="${item.cost ?? 0}" /></td>
+    <td><textarea data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="memo">${escapeHtml(item.memo)}</textarea></td>
+    <td>${renderEquipmentActions(arrayName, index, item, options)}</td>
+  `;
+}
+
 function renderDynamicTables() {
-  renderRows('weaponRows', state.equipment.weapons, 'weapons', (row, index) => `
-    <td><input data-array="weapons" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
-    <td><select data-array="weapons" data-index="${index}" data-field="rank">${createOptions(WEAPON_RANKS, row.rank)}</select></td>
-    <td><select data-array="weapons" data-index="${index}" data-field="type">${createOptions(ATTACK_TYPES, row.type)}</select></td>
-    <td><input data-array="weapons" data-index="${index}" data-field="power" value="${escapeHtml(row.power)}" /></td>
-    <td><input data-array="weapons" data-index="${index}" data-field="hit" value="${escapeHtml(row.hit)}" /></td>
-    <td><input type="number" data-array="weapons" data-index="${index}" data-field="weight" value="${row.weight ?? 0}" /></td>
-    <td><input type="number" data-array="weapons" data-index="${index}" data-field="cost" value="${row.cost ?? 0}" /></td>
-    <td><textarea data-array="weapons" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
-    <td><button type="button" class="danger small" data-remove="weapons" data-index="${index}">削除</button></td>
-  `);
-
-  renderRows('armorRows', state.equipment.armors, 'armors', (row, index) => `
-    <td><input data-array="armors" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
-    <td>${renderArmorResistanceGroup(index, 'slash', 'slashPanic')}</td>
-    <td>${renderArmorResistanceGroup(index, 'pierce', 'piercePanic')}</td>
-    <td>${renderArmorResistanceGroup(index, 'blunt', 'bluntPanic')}</td>
-    <td><input type="number" data-array="armors" data-index="${index}" data-field="weight" value="${row.weight ?? 0}" /></td>
-    <td><input type="number" data-array="armors" data-index="${index}" data-field="cost" value="${row.cost ?? 0}" /></td>
-    <td><textarea data-array="armors" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
-    <td><button type="button" class="danger small" data-remove="armors" data-index="${index}">削除</button></td>
-  `);
-
-  renderRows('itemRows', state.equipment.items, 'items', (row, index) => `
-    <td><input data-array="items" data-index="${index}" data-field="name" value="${escapeHtml(row.name)}" /></td>
-    <td><input type="number" data-array="items" data-index="${index}" data-field="qty" value="${row.qty ?? 1}" /></td>
-    <td><input type="number" data-array="items" data-index="${index}" data-field="weight" value="${row.weight ?? 0}" /></td>
-    <td><input type="number" data-array="items" data-index="${index}" data-field="cost" value="${row.cost ?? 0}" /></td>
-    <td><textarea data-array="items" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
-    <td class="row-actions">
-      <button type="button" class="primary small" data-use-item="${index}">使用</button>
-      <button type="button" class="danger small" data-remove="items" data-index="${index}">削除</button>
-    </td>
-  `);
+  ensureWarehouseState();
+  renderRows('weaponRows', state.equipment.weapons, 'weapons', (row, index) => renderWeaponCells(row, index, 'weapons'));
+  renderRows('armorRows', state.equipment.armors, 'armors', (row, index) => renderArmorCells(row, index, 'armors'));
+  renderRows('itemRows', state.equipment.items, 'items', (row, index) => renderItemCells(row, index, 'items', { allowUse: true }));
 
   if (!state.rewards || !Array.isArray(state.rewards.items)) state.rewards = structuredCloneSafe(DEFAULT_STATE.rewards);
   renderRows('rewardItemRows', state.rewards.items, 'rewardItems', (row, index) => `
@@ -1821,6 +1993,10 @@ function renderDynamicTables() {
     <td><textarea data-array="rewardItems" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
     <td><button type="button" class="danger small" data-remove="rewardItems" data-index="${index}">削除</button></td>
   `);
+
+  renderRows('warehouseWeaponRows', state.warehouse.weapons, 'warehouseWeapons', (row, index) => renderWeaponCells(row, index, 'warehouseWeapons'));
+  renderRows('warehouseArmorRows', state.warehouse.armors, 'warehouseArmors', (row, index) => renderArmorCells(row, index, 'warehouseArmors'));
+  renderRows('warehouseItemRows', state.warehouse.items, 'warehouseItems', (row, index) => renderItemCells(row, index, 'warehouseItems'));
 
   renderRows('prostheticRows', state.equipment.prosthetics, 'prosthetics', (row, index) => {
     const prosthetic = normalizeProstheticRow(row);
@@ -2485,14 +2661,25 @@ function refreshCombatSkillCostDisplays() {
 }
 
 function hookDynamicTables() {
-  ['weaponRows', 'armorRows', 'itemRows', 'rewardItemRows', 'prostheticRows', 'equipmentUpgradeRows', 'skillRows', 'passiveRows'].forEach((id) => {
+  ['weaponRows', 'armorRows', 'itemRows', 'warehouseWeaponRows', 'warehouseArmorRows', 'warehouseItemRows', 'rewardItemRows', 'prostheticRows', 'equipmentUpgradeRows', 'skillRows', 'passiveRows'].forEach((id) => {
     const tbody = $(`#${id}`);
+    if (!tbody) return;
     tbody.addEventListener('input', handleDynamicInput);
     tbody.addEventListener('change', handleDynamicInput);
     tbody.addEventListener('click', (event) => {
       const useItemButton = event.target.closest('[data-use-item]');
       if (useItemButton) {
         useItem(int(useItemButton.dataset.useItem));
+        return;
+      }
+      const storeButton = event.target.closest('[data-store-equipment]');
+      if (storeButton) {
+        storeEquipmentRow(storeButton.dataset.storeEquipment, int(storeButton.dataset.index));
+        return;
+      }
+      const equipButton = event.target.closest('[data-equip-equipment]');
+      if (equipButton) {
+        equipWarehouseRow(equipButton.dataset.equipEquipment, int(equipButton.dataset.index));
         return;
       }
       const btn = event.target.closest('[data-remove]');
@@ -2511,6 +2698,7 @@ function handleDynamicInput(event) {
   const target = getArrayByName(arrayName);
   if (!target[index]) return;
   target[index][field] = getInputValue(el);
+  if (isTrackedEquipmentArray(arrayName)) ensurePurchaseMetadata(target[index], arrayName);
   if (arrayName === 'equipmentUpgrades' && field === 'upgradeId') {
     target[index] = normalizeEquipmentUpgradeRow(target[index]);
     renderDynamicTables();
@@ -2522,6 +2710,9 @@ function getArrayByName(name) {
   if (name === 'weapons') return state.equipment.weapons;
   if (name === 'armors') return state.equipment.armors;
   if (name === 'items') return state.equipment.items;
+  if (name === 'warehouseWeapons') return ensureWarehouseState().weapons;
+  if (name === 'warehouseArmors') return ensureWarehouseState().armors;
+  if (name === 'warehouseItems') return ensureWarehouseState().items;
   if (name === 'rewardItems') {
     if (!state.rewards || !Array.isArray(state.rewards.items)) state.rewards = structuredCloneSafe(DEFAULT_STATE.rewards);
     return state.rewards.items;
@@ -2538,9 +2729,9 @@ function getArrayByName(name) {
 
 function addDynamicRow(name) {
   const rowMap = {
-    weapons: { name: '', rank: 'D', type: '斬撃', power: '', hit: '', weight: 0, cost: 0, memo: '' },
-    armors: { name: '', slash: '脆弱', slashPanic: '脆弱', pierce: '脆弱', piercePanic: '脆弱', blunt: '脆弱', bluntPanic: '脆弱', weight: 0, cost: 0, memo: '' },
-    items: { name: '', qty: 1, weight: 0, cost: 0, memo: '' },
+    weapons: { name: '', rank: 'D', type: '斬撃', power: '', hit: '', weight: 0, cost: 0, memo: '', purchasedAt: '' },
+    armors: { name: '', slash: '脆弱', slashPanic: '脆弱', pierce: '脆弱', piercePanic: '脆弱', blunt: '脆弱', bluntPanic: '脆弱', weight: 0, cost: 0, memo: '', purchasedAt: '' },
+    items: { name: '', qty: 1, weight: 0, cost: 0, memo: '', purchasedAt: '' },
     rewardItems: { name: '', qty: 1, weight: 0, memo: '' },
     prosthetics: { name: '', rank: '', location: '', stat: '', weight: 0, cost: 0, memo: '' },
     equipmentUpgrades: getDefaultEquipmentUpgradeRow(),
@@ -2560,7 +2751,7 @@ function purchaseCatalogEntry(catalogId) {
     return;
   }
   const target = getArrayByName(entry.target);
-  target.push(structuredCloneSafe(entry.row));
+  target.push(stampPurchasedRow(entry.row, entry.target));
   renderDynamicTables();
   updateAll(true);
   toast(`${entry.name}を追加しました`);
@@ -2587,9 +2778,32 @@ function purchaseArmorResistance(entry) {
   if (!field) return;
   armor[entry.targetField] = entry.resistance;
   Object.assign(armor, normalizeOfficialArmorSet(armor, entry));
+  ensurePurchaseMetadata(armor, 'armors', true);
   renderDynamicTables();
   updateAll(true);
   toast(`${entry.targetFullLabel}を${entry.resistance}に更新しました`);
+}
+
+function moveEquipmentRow(sourceName, targetName, index, message) {
+  const source = getArrayByName(sourceName);
+  if (!source[index]) return;
+  const [row] = source.splice(index, 1);
+  getArrayByName(targetName).push(row);
+  renderDynamicTables();
+  updateAll(true);
+  toast(message);
+}
+
+function storeEquipmentRow(sourceName, index) {
+  const targetName = ACTIVE_TO_WAREHOUSE[sourceName];
+  if (!targetName) return;
+  moveEquipmentRow(sourceName, targetName, index, '倉庫に保管しました');
+}
+
+function equipWarehouseRow(sourceName, index) {
+  const targetName = WAREHOUSE_TO_ACTIVE[sourceName];
+  if (!targetName) return;
+  moveEquipmentRow(sourceName, targetName, index, '装備欄に戻しました');
 }
 
 function removeDynamicRow(name, index) {
@@ -2882,9 +3096,14 @@ function getDerived() {
 }
 
 function getTotals() {
-  const weaponCost = state.equipment.weapons.reduce((sum, row) => sum + int(row.cost), 0);
-  const armorCost = state.equipment.armors.reduce((sum, row) => sum + int(row.cost), 0);
-  const itemCost = state.equipment.items.reduce((sum, row) => sum + int(row.cost) * Math.max(1, int(row.qty, 1)), 0);
+  ensureWarehouseState();
+  const weaponCost = state.equipment.weapons.reduce((sum, row) => sum + equipmentRowCost('weapons', row), 0);
+  const armorCost = state.equipment.armors.reduce((sum, row) => sum + equipmentRowCost('armors', row), 0);
+  const itemCost = state.equipment.items.reduce((sum, row) => sum + equipmentRowCost('items', row), 0);
+  const warehouseWeaponCost = state.warehouse.weapons.reduce((sum, row) => sum + equipmentRowCost('warehouseWeapons', row), 0);
+  const warehouseArmorCost = state.warehouse.armors.reduce((sum, row) => sum + equipmentRowCost('warehouseArmors', row), 0);
+  const warehouseItemCost = state.warehouse.items.reduce((sum, row) => sum + equipmentRowCost('warehouseItems', row), 0);
+  const warehouseCost = warehouseWeaponCost + warehouseArmorCost + warehouseItemCost;
   const consumedItemCost = Math.max(0, int(state.equipment.consumedItemCost));
   const prostheticCost = state.equipment.prosthetics.reduce((sum, row) => sum + int(row.cost), 0);
   const equipmentUpgradeCost = (state.equipment.upgrades || []).reduce((sum, row) => sum + getEquipmentUpgradeCost(row), 0);
@@ -2895,9 +3114,12 @@ function getTotals() {
   const skillCost = state.skills.combat.reduce((sum, row) => sum + getCombatSkillTotalPointCost(row), 0);
   const passiveCost = state.skills.passives.reduce((sum, row) => sum + int(row.pointCost), 0);
   const enhanceCost = totalEnhancementCost();
+  const activeEquipmentCost = weaponCost + armorCost + itemCost + consumedItemCost + prostheticCost;
   return {
-    moneyUsed: weaponCost + armorCost + itemCost + consumedItemCost + prostheticCost + equipmentUpgradeCost + enhanceCost,
-    equipmentCost: weaponCost + armorCost + itemCost + consumedItemCost + prostheticCost,
+    moneyUsed: activeEquipmentCost + warehouseCost + equipmentUpgradeCost + enhanceCost,
+    equipmentCost: activeEquipmentCost + warehouseCost,
+    activeEquipmentCost,
+    warehouseCost,
     consumedItemCost,
     equipmentUpgradeCost,
     enhanceCost,
@@ -3111,6 +3333,7 @@ function updateInfoTables() {
     <table class="info-table"><tbody>
       <tr><th>所持金</th><td>${formatMoney(state.growth.cashStart)}</td></tr>
       <tr><th>装備費</th><td>${formatMoney(totals.equipmentCost)}</td></tr>
+      <tr><th>倉庫保管分</th><td>${formatMoney(totals.warehouseCost)}</td></tr>
       <tr><th>装備強化費</th><td>${formatMoney(totals.equipmentUpgradeCost)}</td></tr>
       <tr><th>強化費</th><td>${formatMoney(totals.enhanceCost)}</td></tr>
       <tr><th>残金</th><td>${formatMoney(cashLeft)}</td></tr>
@@ -4540,6 +4763,30 @@ function rollFixerHistory() {
   toast(`経歴表：${result}`);
 }
 
+function handleWarehouseDebugShortcut(event) {
+  const activeTab = $('.tab.active')?.dataset.tab;
+  if (activeTab !== 'warehouse') return;
+  if (event.key === 'Shift') return;
+  if (!event.shiftKey) {
+    warehouseDebugBuffer = '';
+    return;
+  }
+  if (event.key === 'Delete') {
+    warehouseDebugBuffer = 'DELETE';
+  } else if (/^[a-z]$/i.test(event.key)) {
+    warehouseDebugBuffer = `${warehouseDebugBuffer}${event.key.toUpperCase()}`.slice(-6);
+  } else {
+    return;
+  }
+  if (warehouseDebugBuffer === 'DELETE') {
+    warehouseRefundDebugUnlocked = true;
+    warehouseDebugBuffer = '';
+    renderDynamicTables();
+    updateAll(false);
+    toast('倉庫デバッグ: 返金削除を表示しました');
+  }
+}
+
 function scheduleSave() {
   $('#saveStatus').textContent = '編集中...';
   clearTimeout(saveTimer);
@@ -4679,6 +4926,7 @@ function hookEvents() {
   window.addEventListener('hashchange', () => {
     if (getShareHashValue()) loadSharedCharacterFromHash({ render: true, notify: true });
   });
+  document.addEventListener('keydown', handleWarehouseDebugShortcut);
   $('#jumpTekey').addEventListener('click', () => activateTab('output'));
   $('#exportJson').addEventListener('click', () => downloadJson());
   $('#downloadJson').addEventListener('click', () => downloadJson());

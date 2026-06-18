@@ -1338,6 +1338,7 @@ const FIXER_HISTORY_TABLES = {
 const DRAFT_STORAGE_KEY = 'lomtrpg-character-creator';
 const ACCOUNT_STORAGE_KEY = 'lomtrpg-character-creator-accounts';
 const ACTIVE_ACCOUNT_KEY = 'lomtrpg-character-creator-active-account';
+const ADMIN_HIDDEN_STORAGE_KEY = 'lomtrpg-character-creator-admin-hidden-characters';
 const SHARE_CODE_PREFIX = 'LOMTRPG-CHARACTER-CODE-V2';
 const SHARE_CODE_SUFFIX = 'END-LOMTRPG-CHARACTER-CODE';
 const REFUND_WINDOW_MS = 30 * 60 * 1000;
@@ -1348,7 +1349,7 @@ const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_lMvvz60vjIWAZCPuNL5FDA_3JAj8V2q
 const CLOUD_AUTO_SAVE_DELAY_MS = 1600;
 
 const DEFAULT_STATE = {
-  meta: { libraryId: '', librarySavedAt: '', cloudId: '', cloudSavedAt: '', cloudSubmitted: false, cloudSubmittedAt: '', importedFromShare: false, sharedBy: null, sharedAt: '' },
+  meta: { libraryId: '', librarySavedAt: '', cloudId: '', cloudSavedAt: '', cloudSubmitted: false, cloudSubmittedAt: '', cloudAdminEditing: false, cloudAdminOwnerId: '', cloudAdminOwnerName: '', importedFromShare: false, sharedBy: null, sharedAt: '' },
   profile: { characterName: '', playerName: '', age: '', gender: '', role: '', fixerHistory: '', history: '', appearance: '', bonds: '' },
   build: { origin: 'nest', specialty: 'combat', specialtyPassive: '技量' },
   growth: { fame: 0, cashStart: 3000000, skillPointStart: 1000 },
@@ -1418,6 +1419,7 @@ let cloudAutoSaveInFlight = false;
 let cloudAutoSavePending = false;
 let cloudAutoSaveStatus = '';
 let cloudLastAutoSaveSnapshot = '';
+let cloudAdminView = 'visible';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -3934,6 +3936,76 @@ async function runCloudAutoSync() {
   }
 }
 
+function getAdminHiddenStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ADMIN_HIDDEN_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.warn(error);
+    return {};
+  }
+}
+
+function getAdminHiddenStoreKey() {
+  const user = getCloudUser();
+  return user?.id || 'default';
+}
+
+function getAdminHiddenIds() {
+  const store = getAdminHiddenStore();
+  const ids = store[getAdminHiddenStoreKey()];
+  return Array.isArray(ids) ? ids : [];
+}
+
+function setAdminHiddenIds(ids) {
+  const store = getAdminHiddenStore();
+  store[getAdminHiddenStoreKey()] = Array.from(new Set(ids.filter(Boolean)));
+  localStorage.setItem(ADMIN_HIDDEN_STORAGE_KEY, JSON.stringify(store));
+}
+
+function isAdminCharacterHidden(rowOrId) {
+  const id = typeof rowOrId === 'string' ? rowOrId : rowOrId?.id;
+  return Boolean(id && getAdminHiddenIds().includes(id));
+}
+
+function getVisibleAdminCharacters() {
+  return cloudAdminCharacters.filter((row) => !isAdminCharacterHidden(row));
+}
+
+function getHiddenAdminCharacters() {
+  return cloudAdminCharacters.filter((row) => isAdminCharacterHidden(row));
+}
+
+function setCloudAdminView(view) {
+  cloudAdminView = view === 'hidden' ? 'hidden' : 'visible';
+  renderCloudAdminCharacterList();
+}
+
+function hideCloudAdminCharacter(characterId) {
+  const row = cloudAdminCharacters.find((entry) => entry.id === characterId);
+  if (!row) {
+    toast('提出キャラクターが見つかりません');
+    return;
+  }
+  setAdminHiddenIds([...getAdminHiddenIds(), characterId]);
+  cloudAdminView = 'hidden';
+  renderCloudAdminCharacterList();
+  toast('管理者一覧から非表示にしました');
+}
+
+function restoreCloudAdminCharacter(characterId) {
+  setAdminHiddenIds(getAdminHiddenIds().filter((id) => id !== characterId));
+  cloudAdminView = 'visible';
+  renderCloudAdminCharacterList();
+  toast('管理者一覧に戻しました');
+}
+
+function pruneAdminHiddenIds() {
+  const existing = new Set(cloudAdminCharacters.map((row) => row.id));
+  const next = getAdminHiddenIds().filter((id) => existing.has(id));
+  if (next.length !== getAdminHiddenIds().length) setAdminHiddenIds(next);
+}
+
 function updateCloudUi() {
   const client = getCloudClient();
   const user = getCloudUser();
@@ -4010,12 +4082,21 @@ function renderCloudCharacterCard(row, mode = 'own') {
   const isActive = state.meta?.cloudId && state.meta.cloudId === row.id;
   const submittedLabel = row.submitted ? '<span>提出済み</span>' : '<span>下書き</span>';
   const activeLabel = isActive ? '<span>編集中</span>' : '';
-  const ownerLabel = mode === 'admin' ? `<span>作成者: ${escapeHtml(formatCloudOwner(row))}</span>` : '';
+  const ownerLabel = mode === 'admin' || mode === 'admin-hidden' ? `<span>作成者: ${escapeHtml(formatCloudOwner(row))}</span>` : '';
   const dateLabel = row.submitted ? `提出: ${formatDateTime(row.submitted_at)}` : `更新: ${formatDateTime(row.updated_at)}`;
   const actions = mode === 'admin'
     ? `
-      <button type="button" class="primary small" data-cloud-action="admin-load" data-cloud-id="${escapeHtml(row.id)}">確認用に読み込む</button>
+      <button type="button" class="primary small" data-cloud-action="admin-edit" data-cloud-id="${escapeHtml(row.id)}">編集する</button>
+      <button type="button" class="ghost small" data-cloud-action="admin-hide" data-cloud-id="${escapeHtml(row.id)}">非表示へ移動</button>
       <button type="button" class="ghost small" data-cloud-action="admin-share" data-cloud-id="${escapeHtml(row.id)}">共有コードコピー</button>
+      <button type="button" class="danger small" data-cloud-action="admin-delete" data-cloud-id="${escapeHtml(row.id)}">削除</button>
+    `
+    : mode === 'admin-hidden'
+    ? `
+      <button type="button" class="primary small" data-cloud-action="admin-edit" data-cloud-id="${escapeHtml(row.id)}">編集する</button>
+      <button type="button" class="ghost small" data-cloud-action="admin-restore" data-cloud-id="${escapeHtml(row.id)}">表示に戻す</button>
+      <button type="button" class="ghost small" data-cloud-action="admin-share" data-cloud-id="${escapeHtml(row.id)}">共有コードコピー</button>
+      <button type="button" class="danger small" data-cloud-action="admin-delete" data-cloud-id="${escapeHtml(row.id)}">削除</button>
     `
     : `
       <button type="button" class="primary small" data-cloud-action="load" data-cloud-id="${escapeHtml(row.id)}">読み込む</button>
@@ -4071,22 +4152,51 @@ function renderCloudCharacterList() {
 function renderCloudAdminCharacterList() {
   const section = $('#cloudAdminSection');
   const root = $('#cloudAdminCharacterList');
+  const hiddenRoot = $('#cloudAdminHiddenCharacterList');
+  const visibleTab = $('#cloudAdminVisibleTab');
+  const hiddenTab = $('#cloudAdminHiddenTab');
   if (!section || !root) return;
   section.hidden = !isCloudAdmin();
   if (!isCloudAdmin()) {
     root.innerHTML = '';
+    if (hiddenRoot) hiddenRoot.innerHTML = '';
     return;
   }
+
+  const visibleRows = getVisibleAdminCharacters();
+  const hiddenRows = getHiddenAdminCharacters();
+  const showingHidden = cloudAdminView === 'hidden';
+  root.hidden = showingHidden;
+  if (hiddenRoot) hiddenRoot.hidden = !showingHidden;
+  if (visibleTab) {
+    visibleTab.classList.toggle('primary', !showingHidden);
+    visibleTab.classList.toggle('ghost', showingHidden);
+    visibleTab.textContent = `表示中 (${visibleRows.length})`;
+  }
+  if (hiddenTab) {
+    hiddenTab.classList.toggle('primary', showingHidden);
+    hiddenTab.classList.toggle('ghost', !showingHidden);
+    hiddenTab.textContent = `非表示 (${hiddenRows.length})`;
+  }
+
   if (cloudLoading) {
-    root.innerHTML = '<div class="character-empty">提出キャラクターを読み込み中です。</div>';
+    const loading = '<div class="character-empty">提出キャラクターを読み込み中です。</div>';
+    root.innerHTML = loading;
+    if (hiddenRoot) hiddenRoot.innerHTML = loading;
     return;
   }
-  if (!cloudAdminCharacters.length) {
-    root.innerHTML = '<div class="character-empty">提出済みキャラクターはまだありません。</div>';
-    return;
+  if (!visibleRows.length) {
+    root.innerHTML = '<div class="character-empty">表示中の提出キャラクターはありません。</div>';
+  } else {
+    root.innerHTML = visibleRows.map((row) => renderCloudCharacterCard(row, 'admin')).join('');
   }
-  root.innerHTML = cloudAdminCharacters.map((row) => renderCloudCharacterCard(row, 'admin')).join('');
+  if (hiddenRoot) {
+    hiddenRoot.innerHTML = hiddenRows.length
+      ? hiddenRows.map((row) => renderCloudCharacterCard(row, 'admin-hidden')).join('')
+      : '<div class="character-empty">非表示の提出キャラクターはありません。</div>';
+  }
 }
+
 
 async function initCloud() {
   const client = getCloudClient();
@@ -4190,6 +4300,7 @@ async function loadCloudAdminCharacters(options = {}) {
   }
   if (result.error) throw result.error;
   cloudAdminCharacters = Array.isArray(result.data) ? result.data : [];
+  pruneAdminHiddenIds();
   if (options.render !== false) updateCloudUi();
   return cloudAdminCharacters;
 }
@@ -4299,6 +4410,9 @@ function buildCloudCharacterPayload({ submit = false } = {}) {
     cloudSubmitted: submitted,
     cloudSubmittedAt: submittedAt || ''
   };
+  delete characterData.meta.cloudAdminEditing;
+  delete characterData.meta.cloudAdminOwnerId;
+  delete characterData.meta.cloudAdminOwnerName;
   return {
     name: getCloudSaveName(),
     memo: getCloudSaveMemo(),
@@ -4322,8 +4436,9 @@ async function saveCurrentCharacterToCloud(options = {}) {
   try {
     const payload = buildCloudCharacterPayload({ submit });
     let result;
+    const adminEditingCloudRow = Boolean(isCloudAdmin() && state.meta?.cloudAdminEditing && state.meta?.cloudId);
     const ownsCurrentCloudRow = Boolean(state.meta?.cloudId && cloudCharacters.some((row) => row.id === state.meta.cloudId));
-    const shouldUpdateCloudRow = Boolean(state.meta?.cloudId && (ownsCurrentCloudRow || !state.meta?.importedFromShare));
+    const shouldUpdateCloudRow = Boolean(state.meta?.cloudId && (adminEditingCloudRow || ownsCurrentCloudRow || !state.meta?.importedFromShare));
     if (shouldUpdateCloudRow) {
       result = await client
         .from('characters')
@@ -4345,7 +4460,10 @@ async function saveCurrentCharacterToCloud(options = {}) {
       cloudId: row.id,
       cloudSavedAt: row.updated_at || payload.updated_at,
       cloudSubmitted: Boolean(row.submitted),
-      cloudSubmittedAt: row.submitted_at || ''
+      cloudSubmittedAt: row.submitted_at || '',
+      cloudAdminEditing: adminEditingCloudRow,
+      cloudAdminOwnerId: adminEditingCloudRow ? row.owner_id || state.meta?.cloudAdminOwnerId || '' : state.meta?.cloudAdminOwnerId || '',
+      cloudAdminOwnerName: adminEditingCloudRow ? state.meta?.cloudAdminOwnerName || '' : state.meta?.cloudAdminOwnerName || ''
     };
     const nameInput = $('#librarySaveName');
     const memoInput = $('#librarySaveMemo');
@@ -4371,7 +4489,7 @@ function findCloudCharacterById(characterId) {
 }
 
 function loadCloudCharacterRow(row, options = {}) {
-  const { preserveCloudId = true } = options;
+  const { preserveCloudId = true, adminEditing = false } = options;
   state = mergeDefaults(row.data || {});
   const ownerName = formatCloudOwner(row);
   state.meta = {
@@ -4380,6 +4498,9 @@ function loadCloudCharacterRow(row, options = {}) {
     cloudSavedAt: preserveCloudId ? row.updated_at || '' : '',
     cloudSubmitted: Boolean(row.submitted),
     cloudSubmittedAt: row.submitted_at || '',
+    cloudAdminEditing: Boolean(adminEditing),
+    cloudAdminOwnerId: adminEditing ? row.owner_id || '' : '',
+    cloudAdminOwnerName: adminEditing ? ownerName : '',
     importedFromShare: preserveCloudId ? false : true,
     sharedBy: preserveCloudId ? state.meta?.sharedBy || null : { name: row.owner_id || '', displayName: ownerName },
     sharedAt: preserveCloudId ? state.meta?.sharedAt || '' : row.submitted_at || row.updated_at || ''
@@ -4391,7 +4512,7 @@ function loadCloudCharacterRow(row, options = {}) {
   populateStateToDom();
   saveState();
   activateTab('basic');
-  toast(`${row.name || state.profile.characterName || 'キャラクター'}を読み込みました`);
+  toast(adminEditing ? `${row.name || state.profile.characterName || 'キャラクター'}を管理者編集用に読み込みました` : `${row.name || state.profile.characterName || 'キャラクター'}を読み込みました`);
 }
 
 function loadCloudCharacter(characterId) {
@@ -4409,7 +4530,7 @@ function loadCloudAdminCharacter(characterId) {
     toast('提出キャラクターが見つかりません');
     return;
   }
-  loadCloudCharacterRow(row, { preserveCloudId: false });
+  loadCloudCharacterRow(row, { preserveCloudId: true, adminEditing: true });
 }
 
 async function deleteCloudCharacter(characterId) {
@@ -4439,15 +4560,46 @@ async function deleteCloudCharacter(characterId) {
   }
 }
 
+async function deleteCloudAdminCharacter(characterId) {
+  const client = getCloudClient();
+  const row = cloudAdminCharacters.find((entry) => entry.id === characterId);
+  if (!client || !row) return;
+  if (!confirm(`提出キャラクター「${row.name || '無名キャラクター'}」を完全に削除します。持ち主のクラウド保存からも削除されます。よろしいですか？`)) return;
+  setCloudBusy(true);
+  try {
+    const { error } = await client.from('characters').delete().eq('id', characterId);
+    if (error) throw error;
+    setAdminHiddenIds(getAdminHiddenIds().filter((id) => id !== characterId));
+    if (state.meta?.cloudId === characterId) {
+      state.meta.cloudId = '';
+      state.meta.cloudSavedAt = '';
+      state.meta.cloudSubmitted = false;
+      state.meta.cloudSubmittedAt = '';
+      state.meta.cloudAdminEditing = false;
+      state.meta.cloudAdminOwnerId = '';
+      state.meta.cloudAdminOwnerName = '';
+      saveState();
+    }
+    await refreshCloudData({ silent: true });
+    toast('提出キャラクターを完全削除しました');
+  } catch (error) {
+    console.error(error);
+    cloudLastError = formatCloudError(error);
+    toast('提出キャラクターの削除に失敗しました');
+  } finally {
+    setCloudBusy(false);
+  }
+}
+
 function copyCloudShareCode(characterId, mode = 'own') {
-  const row = mode === 'admin'
+  const row = mode === 'admin' || mode === 'admin-hidden'
     ? cloudAdminCharacters.find((entry) => entry.id === characterId)
     : findCloudCharacterById(characterId);
   if (!row) {
     toast('キャラクターが見つかりません');
     return;
   }
-  const sharedBy = mode === 'admin'
+  const sharedBy = mode === 'admin' || mode === 'admin-hidden'
     ? { name: row.owner_id || '', displayName: formatCloudOwner(row) }
     : getCloudAccountSnapshot();
   copyText(buildShareImportCodeForState(row.data, { sharedBy }), '共有コードをコピーしました');
@@ -4461,8 +4613,11 @@ function handleCloudCharacterAction(event) {
   if (action === 'load') loadCloudCharacter(characterId);
   if (action === 'share') copyCloudShareCode(characterId, 'own');
   if (action === 'delete') void deleteCloudCharacter(characterId);
-  if (action === 'admin-load') loadCloudAdminCharacter(characterId);
-  if (action === 'admin-share') copyCloudShareCode(characterId, 'admin');
+  if (action === 'admin-edit') loadCloudAdminCharacter(characterId);
+  if (action === 'admin-hide') hideCloudAdminCharacter(characterId);
+  if (action === 'admin-restore') restoreCloudAdminCharacter(characterId);
+  if (action === 'admin-delete') void deleteCloudAdminCharacter(characterId);
+  if (action === 'admin-share') copyCloudShareCode(characterId, isAdminCharacterHidden(characterId) ? 'admin-hidden' : 'admin');
 }
 
 function getAccounts() {
@@ -5991,6 +6146,10 @@ function hookEvents() {
   $('#refreshCloudCharacters').addEventListener('click', () => void refreshCloudData());
   $('#cloudCharacterList').addEventListener('click', handleCloudCharacterAction);
   $('#cloudAdminCharacterList').addEventListener('click', handleCloudCharacterAction);
+  $('#cloudAdminHiddenCharacterList').addEventListener('click', handleCloudCharacterAction);
+  $$('.cloud-admin-tabs [data-cloud-admin-view]').forEach((button) => {
+    button.addEventListener('click', () => setCloudAdminView(button.dataset.cloudAdminView));
+  });
   ['librarySaveName', 'librarySaveMemo'].forEach((id) => {
     const input = $(`#${id}`);
     if (input) input.addEventListener('input', () => scheduleCloudAutoSync());

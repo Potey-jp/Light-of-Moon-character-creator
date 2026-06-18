@@ -487,7 +487,12 @@
             <h2>管理者: 提出キャラクター</h2>
             <span class="hint">GM/管理者確認用</span>
           </div>
+          <div class="button-row cloud-admin-tabs" role="tablist" aria-label="管理者キャラクター表示切替">
+            <button type="button" id="cloudAdminVisibleTab" class="primary small" data-cloud-admin-view="visible">表示中</button>
+            <button type="button" id="cloudAdminHiddenTab" class="ghost small" data-cloud-admin-view="hidden">非表示</button>
+          </div>
           <div id="cloudAdminCharacterList" class="character-list"></div>
+          <div id="cloudAdminHiddenCharacterList" class="character-list" hidden></div>
         </section>
 
         <section class="card">

@@ -1438,6 +1438,8 @@ let cloudAutoSaveStatus = '';
 let cloudLastAutoSaveSnapshot = '';
 let cloudAdminView = 'visible';
 let cloudPostAuthPromise = null;
+let cloudDisplayNameDirty = false;
+let cloudDisplayNameUpdating = false;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -3888,8 +3890,8 @@ function isCloudAdmin() {
 
 function getCloudDisplayName() {
   const user = getCloudUser();
-  return cloudProfile?.display_name
-    || user?.user_metadata?.display_name
+  return user?.user_metadata?.display_name
+    || cloudProfile?.display_name
     || user?.email
     || 'クラウドユーザー';
 }
@@ -3918,14 +3920,16 @@ function getCloudAuthCredentials(source = 'library') {
 function syncCloudAuthFields({ email = '', password = '', displayName = '' } = {}) {
   ['cloudEmail', 'gateCloudEmail'].forEach((id) => { const el = $(`#${id}`); if (el && email) el.value = email; });
   ['cloudPassword', 'gateCloudPassword'].forEach((id) => { const el = $(`#${id}`); if (el && password) el.value = password; });
-  setCloudDisplayNameInputs(displayName);
+  setCloudDisplayNameInputs(displayName, { force: true });
+  if (displayName) cloudDisplayNameDirty = false;
 }
 
-function setCloudDisplayNameInputs(displayName = getCloudDisplayName()) {
+function setCloudDisplayNameInputs(displayName = getCloudDisplayName(), options = {}) {
   if (!displayName) return;
+  const { force = false } = options;
   ['cloudDisplayName', 'gateCloudDisplayName'].forEach((id) => {
     const el = $(`#${id}`);
-    if (el && el !== document.activeElement) el.value = displayName;
+    if (el && (force || el !== document.activeElement)) el.value = displayName;
   });
 }
 
@@ -4442,7 +4446,7 @@ function updateCloudUi() {
     else saveStatus.textContent = cloudAutoSaveStatus || (state.meta?.cloudId ? 'クラウド同期済み' : 'クラウド未登録');
   }
 
-  if (loggedIn) setCloudDisplayNameInputs();
+  if (loggedIn && !cloudDisplayNameDirty && !cloudDisplayNameUpdating) setCloudDisplayNameInputs();
 
   const canAuth = Boolean(client) && !cloudBusy;
   const canUseCloud = Boolean(client && loggedIn) && !cloudBusy;
@@ -4799,34 +4803,51 @@ async function updateCloudDisplayName() {
     toast('表示名を入力してください');
     return;
   }
+  cloudDisplayNameUpdating = true;
+  cloudDisplayNameDirty = false;
+  setCloudDisplayNameInputs(displayName, { force: true });
   setCloudBusy(true);
   try {
     const authResult = await client.auth.updateUser({ data: { display_name: displayName } });
     if (authResult.error) throw authResult.error;
-    let result = await client
+    if (authResult.data?.user && cloudSession) cloudSession = { ...cloudSession, user: authResult.data.user };
+
+    cloudProfile = {
+      ...(cloudProfile || {}),
+      id: user.id,
+      display_name: displayName,
+      role: cloudProfile?.role || 'player'
+    };
+
+    let profileResult = await client
       .from('profiles')
       .update({ display_name: displayName })
       .eq('id', user.id)
       .select('id, display_name, role')
       .maybeSingle();
-    if (!result.error && !result.data) {
-      result = await client
+    if (!profileResult.error && !profileResult.data) {
+      profileResult = await client
         .from('profiles')
         .insert({ id: user.id, display_name: displayName })
         .select('id, display_name, role')
         .maybeSingle();
     }
-    if (result.error) throw result.error;
-    cloudProfile = result.data || { ...(cloudProfile || {}), id: user.id, display_name: displayName, role: cloudProfile?.role || 'player' };
-    setCloudDisplayNameInputs(displayName);
+    if (profileResult.error) console.warn('profiles display_name update skipped:', profileResult.error);
+    else if (profileResult.data) cloudProfile = profileResult.data;
+
+    setCloudDisplayNameInputs(displayName, { force: true });
     await refreshCloudData({ silent: true });
+    setCloudDisplayNameInputs(displayName, { force: true });
     updateShareCodeFields();
     toast('表示名を更新しました');
   } catch (error) {
     console.error(error);
+    cloudDisplayNameDirty = true;
+    setCloudDisplayNameInputs(displayName, { force: true });
     cloudLastError = formatCloudError(error);
     toast('表示名の更新に失敗しました');
   } finally {
+    cloudDisplayNameUpdating = false;
     setCloudBusy(false);
   }
 }
@@ -6549,6 +6570,10 @@ function hookEvents() {
   $('#cloudSignUp').addEventListener('click', () => void signUpCloudAccount('library'));
   $('#cloudLogin').addEventListener('click', () => void loginCloudAccount('library'));
   $('#updateCloudDisplayName').addEventListener('click', () => void updateCloudDisplayName());
+  ['cloudDisplayName', 'gateCloudDisplayName'].forEach((id) => {
+    const input = $(`#${id}`);
+    if (input) input.addEventListener('input', () => { cloudDisplayNameDirty = true; });
+  });
   $('#gateCloudSignUp').addEventListener('click', () => void signUpCloudAccount('gate'));
   $('#gateCloudLogin').addEventListener('click', () => void loginCloudAccount('gate'));
   $('#cloudLogout').addEventListener('click', () => void logoutCloudAccount());

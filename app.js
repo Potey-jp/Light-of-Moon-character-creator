@@ -2035,17 +2035,24 @@ function renderArmorFieldRefund(arrayName, index, fieldKey) {
   return `<div class="armor-field-refund">${button}<small>${escapeHtml(status)}</small></div>`;
 }
 
+function renderArmorResistanceValue(value) {
+  return `<strong class="armor-resistance-value">${escapeHtml(value || '脆弱')}</strong>`;
+}
+
 function renderArmorResistanceGroup(arrayName, index, mainField, panicField) {
+  const row = getArrayByName(arrayName)[index] || {};
+  const mainValue = row[mainField] || '脆弱';
+  const panicValue = row[panicField] || '脆弱';
   return `
     <div class="armor-resistance-group">
       <label class="armor-resistance-field armor-resistance-field-physical">
         <span>耐性</span>
-        <select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="${mainField}">${createOptions(RESISTANCES, getArrayByName(arrayName)[index]?.[mainField])}</select>
+        ${renderArmorResistanceValue(mainValue)}
         ${renderArmorFieldRefund(arrayName, index, mainField)}
       </label>
       <label class="armor-resistance-field armor-resistance-field-panic">
         <span>混乱耐性</span>
-        <select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="${panicField}">${createOptions(RESISTANCES, getArrayByName(arrayName)[index]?.[panicField])}</select>
+        ${renderArmorResistanceValue(panicValue)}
         ${renderArmorFieldRefund(arrayName, index, panicField)}
       </label>
     </div>
@@ -3025,11 +3032,14 @@ function handleDynamicInput(event) {
   const field = el.dataset.field;
   const target = getArrayByName(arrayName);
   if (!target[index]) return;
+  if (equipmentKindFromArrayName(arrayName) === 'armors' && ARMOR_RESISTANCE_FIELDS.some((item) => item.key === field)) {
+    toast('防具耐性は購入カタログから購入した場合のみ変更できます');
+    renderDynamicTables();
+    renderEquipmentCatalog();
+    return;
+  }
   target[index][field] = getInputValue(el);
   if (isTrackedEquipmentArray(arrayName)) ensurePurchaseMetadata(target[index], arrayName);
-  if (arrayName === 'armors' && ARMOR_RESISTANCE_FIELDS.some((item) => item.key === field)) {
-    renderEquipmentCatalog();
-  }
   if (arrayName === 'equipmentUpgrades' && field === 'upgradeId') {
     target[index] = normalizeEquipmentUpgradeRow(target[index]);
     renderDynamicTables();

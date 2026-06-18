@@ -229,8 +229,17 @@ textarea { resize: vertical; line-height: 1.65; }
   font-size: .74rem;
   font-weight: 700;
 }
-.armor-resistance-group select {
+.armor-resistance-value {
+  display: block;
   width: 100%;
+  min-height: 36px;
+  padding: 8px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255,255,255,.04);
+  color: var(--gold-2);
+  font-size: .95rem;
+  line-height: 1.2;
 }
 .stat-name { font-weight: 800; color: var(--gold-2); }
 .readonly-cell { color: var(--gold-2); font-weight: 800; white-space: nowrap; }

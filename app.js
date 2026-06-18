@@ -1355,6 +1355,7 @@ const DRAFT_STORAGE_KEY = 'lomtrpg-character-creator';
 const ACCOUNT_STORAGE_KEY = 'lomtrpg-character-creator-accounts';
 const ACTIVE_ACCOUNT_KEY = 'lomtrpg-character-creator-active-account';
 const ADMIN_HIDDEN_STORAGE_KEY = 'lomtrpg-character-creator-admin-hidden-characters';
+const CLOUD_MIGRATION_STORAGE_KEY = 'lomtrpg-character-creator-cloud-migration';
 const SHARE_CODE_PREFIX = 'LOMTRPG-CHARACTER-CODE-V2';
 const SHARE_CODE_SUFFIX = 'END-LOMTRPG-CHARACTER-CODE';
 const REFUND_WINDOW_MS = 30 * 60 * 1000;
@@ -1436,6 +1437,7 @@ let cloudAutoSavePending = false;
 let cloudAutoSaveStatus = '';
 let cloudLastAutoSaveSnapshot = '';
 let cloudAdminView = 'visible';
+let cloudPostAuthPromise = null;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -3290,6 +3292,7 @@ function applyRewards() {
   resetRewards();
   populateStateToDom();
   saveState();
+  scheduleCloudAutoSync();
   toast(`報酬を適用しました（アイテム${rewardItems.length}件）`);
 }
 
@@ -3900,6 +3903,367 @@ function getCloudAccountSnapshot() {
   };
 }
 
+function getCloudAuthCredentials(source = 'library') {
+  const gate = source === 'gate';
+  const emailEl = $(gate ? '#gateCloudEmail' : '#cloudEmail') || $('#gateCloudEmail') || $('#cloudEmail');
+  const passwordEl = $(gate ? '#gateCloudPassword' : '#cloudPassword') || $('#gateCloudPassword') || $('#cloudPassword');
+  const displayNameEl = $(gate ? '#gateCloudDisplayName' : '#cloudDisplayName') || $('#gateCloudDisplayName') || $('#cloudDisplayName');
+  return {
+    email: emailEl?.value.trim() || '',
+    password: passwordEl?.value || '',
+    displayName: displayNameEl?.value.trim() || ''
+  };
+}
+
+function syncCloudAuthFields({ email = '', password = '', displayName = '' } = {}) {
+  ['cloudEmail', 'gateCloudEmail'].forEach((id) => { const el = $(`#${id}`); if (el && email) el.value = email; });
+  ['cloudPassword', 'gateCloudPassword'].forEach((id) => { const el = $(`#${id}`); if (el && password) el.value = password; });
+  ['cloudDisplayName', 'gateCloudDisplayName'].forEach((id) => { const el = $(`#${id}`); if (el && displayName) el.value = displayName; });
+}
+
+function updateAuthGate() {
+  const client = getCloudClient();
+  const loggedIn = isCloudLoggedIn();
+  document.body.classList.toggle('auth-locked', !loggedIn);
+  const status = $('#authGateStatus');
+  if (status) {
+    if (!client) status.textContent = 'クラウド接続を初期化できませんでした。';
+    else if (cloudBusy || cloudLoading) status.textContent = 'クラウド接続を確認中です。';
+    else if (!loggedIn) status.textContent = 'メールアドレスとパスワードでログインしてください。';
+    else status.innerHTML = `ログイン中: <strong>${escapeHtml(getCloudDisplayName())}</strong>`;
+  }
+  const note = $('#authGateNote');
+  if (note) {
+    if (cloudLastError) note.textContent = `クラウドエラー: ${cloudLastError}`;
+    else if (!loggedIn) note.textContent = 'ログイン後、ブラウザ内に残っている旧保存キャラクターは自動でクラウドへ複製・提出されます。';
+    else note.textContent = 'ログイン済みです。編集画面を表示します。';
+  }
+  const canAuth = Boolean(client) && !cloudBusy;
+  ['gateCloudLogin', 'gateCloudSignUp'].forEach((id) => {
+    const button = $(`#${id}`);
+    if (button) button.disabled = !canAuth || loggedIn;
+  });
+}
+
+function getCloudMigrationStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CLOUD_MIGRATION_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.warn(error);
+    return {};
+  }
+}
+
+function setCloudMigrationStore(store) {
+  localStorage.setItem(CLOUD_MIGRATION_STORAGE_KEY, JSON.stringify(store));
+}
+
+function getCloudMigrationUserStore() {
+  const userId = getCloudUser()?.id || 'anonymous';
+  const store = getCloudMigrationStore();
+  const userStore = store[userId];
+  return userStore && typeof userStore === 'object' && !Array.isArray(userStore) ? userStore : {};
+}
+
+function markCloudMigrationSource(sourceKey, rowId) {
+  if (!sourceKey || !rowId) return;
+  const userId = getCloudUser()?.id || 'anonymous';
+  const store = getCloudMigrationStore();
+  const userStore = store[userId] && typeof store[userId] === 'object' && !Array.isArray(store[userId]) ? store[userId] : {};
+  userStore[sourceKey] = rowId;
+  store[userId] = userStore;
+  setCloudMigrationStore(store);
+}
+
+function findCloudCharacterByMigrationSource(sourceKey) {
+  if (!sourceKey) return null;
+  return cloudCharacters.find((row) => row?.data?.meta?.cloudMigrationSource === sourceKey) || null;
+}
+
+function hasMigratedLegacySource(sourceKey) {
+  if (!sourceKey) return false;
+  const userStore = getCloudMigrationUserStore();
+  if (userStore[sourceKey]) return true;
+  return Boolean(findCloudCharacterByMigrationSource(sourceKey));
+}
+
+function hashString(value) {
+  let hash = 0;
+  const text = String(value || '');
+  for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  return Math.abs(hash).toString(36);
+}
+
+function hasMeaningfulCharacterData(characterData) {
+  const data = mergeDefaults(characterData || {});
+  if (Object.values(data.profile || {}).some((value) => oneLine(value))) return true;
+  if (STAT_KEYS.some((key) => int(data.stats?.[key]?.base) || int(data.stats?.[key]?.boost) || int(data.stats?.[key]?.misc))) return true;
+  if (int(data.growth?.fame) || int(data.growth?.cashStart) !== int(DEFAULT_STATE.growth.cashStart) || int(data.growth?.skillPointStart) !== int(DEFAULT_STATE.growth.skillPointStart)) return true;
+  if (int(data.lightSeed?.germinationRate) || oneLine(data.lightSeed?.memo) || int(data.lightSeed?.number, 1) !== 1) return true;
+  if ((data.equipment?.weapons || []).some((row) => !isBlankWeaponRow(row))) return true;
+  if ((data.equipment?.armors || []).some((row) => !isBlankArmorRow(row))) return true;
+  if ((data.equipment?.items || []).some((row) => !isBlankItemRow(row))) return true;
+  if ((data.equipment?.prosthetics || []).some((row) => row?.name || row?.memo || int(row?.cost))) return true;
+  if ((data.equipment?.upgrades || []).some(hasEquipmentUpgradeContent)) return true;
+  if ((data.warehouse?.weapons || []).some((row) => !isBlankWeaponRow(row))) return true;
+  if ((data.warehouse?.armors || []).some((row) => !isBlankArmorRow(row))) return true;
+  if ((data.warehouse?.items || []).some((row) => !isBlankItemRow(row))) return true;
+  if ((data.skills?.passives || []).some((row) => row?.name || row?.memo || int(row?.pointCost))) return true;
+  if ((data.skills?.combat || []).some((row) => !DEFAULT_STATE.skills.combat.some((base) => normalizeCombatSkillName(base.name) === normalizeCombatSkillName(row.name)) && hasCombatSkillContent(row))) return true;
+  if (oneLine(data.office?.name) || oneLine(data.office?.leader) || oneLine(data.office?.members) || oneLine(data.office?.tactic1) || oneLine(data.office?.tactic2) || oneLine(data.office?.memo) || int(data.office?.fame)) return true;
+  return false;
+}
+
+function buildCloudPayloadFromCharacterData(characterData, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const sourceData = cloneCharacterForLibrary(characterData);
+  const submitted = Boolean(options.submit || sourceData.meta?.cloudSubmitted);
+  const submittedAt = submitted ? (options.submittedAt || now) : null;
+  sourceData.meta = {
+    ...(sourceData.meta || {}),
+    libraryId: '',
+    librarySavedAt: '',
+    cloudId: options.cloudId || sourceData.meta?.cloudId || '',
+    cloudSavedAt: now,
+    cloudSubmitted: submitted,
+    cloudSubmittedAt: submittedAt || '',
+    cloudMigrationSource: options.migrationSource || sourceData.meta?.cloudMigrationSource || '',
+    cloudMigrationSourceName: options.migrationSourceName || sourceData.meta?.cloudMigrationSourceName || '',
+    cloudMigrationAt: options.migrationSource ? now : sourceData.meta?.cloudMigrationAt || ''
+  };
+  delete sourceData.meta.cloudAdminEditing;
+  delete sourceData.meta.cloudAdminOwnerId;
+  delete sourceData.meta.cloudAdminOwnerName;
+  return {
+    name: options.name || sourceData.profile?.characterName || '無名キャラクター',
+    memo: options.memo || '',
+    data: sourceData,
+    submitted,
+    submitted_at: submittedAt,
+    updated_at: now
+  };
+}
+
+async function saveCharacterDataToCloud(characterData, options = {}) {
+  const client = getCloudClient();
+  const user = getCloudUser();
+  if (!client || !user) return null;
+  const existingBySource = options.migrationSource ? findCloudCharacterByMigrationSource(options.migrationSource) : null;
+  if (existingBySource) return existingBySource;
+  const payload = buildCloudPayloadFromCharacterData(characterData, options);
+  const insertPayload = { ...payload, owner_id: user.id };
+  const { data, error } = await client
+    .from('characters')
+    .insert(insertPayload)
+    .select('id, owner_id, name, memo, data, submitted, submitted_at, created_at, updated_at')
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+function collectLegacyLibraryEntries() {
+  const accounts = getAccounts();
+  const entries = [];
+  Object.values(accounts).forEach((account) => {
+    if (!account || !Array.isArray(account.characters)) return;
+    const accountName = formatAccountName(account);
+    account.characters.forEach((entry) => {
+      if (!entry?.data) return;
+      entries.push({
+        type: 'library',
+        sourceKey: `library:${account.id || account.name || 'account'}:${entry.id || hashString(JSON.stringify(entry.data))}`,
+        sourceName: `旧保存庫:${accountName}`,
+        name: entry.name || entry.data?.profile?.characterName || '無名キャラクター',
+        memo: [entry.memo || '', `旧保存庫:${accountName}`].filter(Boolean).join(' / '),
+        data: entry.data
+      });
+    });
+  });
+  return entries;
+}
+
+function collectLegacyDraftEntry(libraryEntries = []) {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const data = mergeDefaults(JSON.parse(raw));
+    if (!hasMeaningfulCharacterData(data)) return null;
+    if (data.meta?.cloudId) return null;
+    const libraryId = data.meta?.libraryId || '';
+    if (libraryId && libraryEntries.some((entry) => entry.sourceKey.endsWith(`:${libraryId}`))) return null;
+    const sourceKey = `draft:${hashString(JSON.stringify(data))}`;
+    return {
+      type: 'draft',
+      sourceKey,
+      sourceName: '旧編集中データ',
+      name: data.profile?.characterName || '旧編集中キャラクター',
+      memo: '旧ブラウザ保存の編集中データから移行',
+      data,
+      current: true
+    };
+  } catch (error) {
+    console.warn(error);
+    return null;
+  }
+}
+
+function collectLegacyMigrationEntries() {
+  const libraryEntries = collectLegacyLibraryEntries();
+  const draftEntry = collectLegacyDraftEntry(libraryEntries);
+  return draftEntry ? [...libraryEntries, draftEntry] : libraryEntries;
+}
+
+async function submitOwnCloudCharacters(options = {}) {
+  const { silent = true } = options;
+  const client = getCloudClient();
+  if (!client || !getCloudUser()) return { submitted: 0, failed: 0 };
+  const targets = cloudCharacters.filter((row) => !row.submitted);
+  if (!targets.length) return { submitted: 0, failed: 0 };
+  let submitted = 0;
+  let failed = 0;
+  cloudAutoSaveStatus = '保存済みキャラを自動提出中';
+  updateCloudUi();
+  for (const row of targets) {
+    try {
+      const now = new Date().toISOString();
+      const characterData = cloneCharacterForLibrary(row.data || {});
+      characterData.meta = {
+        ...(characterData.meta || {}),
+        libraryId: '',
+        librarySavedAt: '',
+        cloudId: row.id,
+        cloudSavedAt: now,
+        cloudSubmitted: true,
+        cloudSubmittedAt: now
+      };
+      delete characterData.meta.cloudAdminEditing;
+      delete characterData.meta.cloudAdminOwnerId;
+      delete characterData.meta.cloudAdminOwnerName;
+      const { error } = await client
+        .from('characters')
+        .update({ data: characterData, submitted: true, submitted_at: now, updated_at: now })
+        .eq('id', row.id);
+      if (error) throw error;
+      if (state.meta?.cloudId === row.id) {
+        state.meta.cloudSubmitted = true;
+        state.meta.cloudSubmittedAt = now;
+        state.meta.cloudSavedAt = now;
+      }
+      submitted += 1;
+    } catch (error) {
+      console.error(error);
+      failed += 1;
+      cloudLastError = formatCloudError(error);
+    }
+  }
+  if (submitted) cloudAutoSaveStatus = `${submitted}件を自動提出済み`;
+  if (!silent && submitted) toast(`保存済みキャラ${submitted}件を自動提出しました`);
+  if (!silent && failed) toast(`${failed}件の自動提出に失敗しました`);
+  return { submitted, failed };
+}
+
+async function migrateLegacyCharactersToCloud(options = {}) {
+  const { silent = false } = options;
+  if (!getCloudClient() || !getCloudUser()) return { migrated: 0, failed: 0 };
+  const entries = collectLegacyMigrationEntries();
+  if (!entries.length) {
+    localStorage.removeItem(ACCOUNT_STORAGE_KEY);
+    localStorage.removeItem(ACTIVE_ACCOUNT_KEY);
+    if (!hasMeaningfulCharacterData(state)) localStorage.removeItem(DRAFT_STORAGE_KEY);
+    return { migrated: 0, failed: 0 };
+  }
+  let migrated = 0;
+  let failed = 0;
+  let migratedLibraryCount = 0;
+  let totalLibraryCount = entries.filter((entry) => entry.type === 'library').length;
+  cloudAutoSaveStatus = '旧保存庫をクラウドへ移行中';
+  updateCloudUi();
+  for (const entry of entries) {
+    try {
+      let row = findCloudCharacterByMigrationSource(entry.sourceKey);
+      if (!row && !hasMigratedLegacySource(entry.sourceKey)) {
+        row = await saveCharacterDataToCloud(entry.data, {
+          name: entry.name,
+          memo: entry.memo,
+          submit: true,
+          migrationSource: entry.sourceKey,
+          migrationSourceName: entry.sourceName
+        });
+        migrated += 1;
+      }
+      if (row) {
+        markCloudMigrationSource(entry.sourceKey, row.id);
+        if (entry.type === 'library') migratedLibraryCount += 1;
+        if (entry.current) {
+          state = mergeDefaults(entry.data);
+          state.meta = {
+            ...(state.meta || {}),
+            libraryId: '',
+            librarySavedAt: '',
+            cloudId: row.id,
+            cloudSavedAt: row.updated_at || '',
+            cloudSubmitted: Boolean(row.submitted),
+            cloudSubmittedAt: row.submitted_at || '',
+            importedFromShare: false
+          };
+          const nameInput = $('#librarySaveName');
+          const memoInput = $('#librarySaveMemo');
+          if (nameInput) nameInput.value = row.name || state.profile.characterName || '';
+          if (memoInput) memoInput.value = row.memo || '';
+        }
+      }
+    } catch (error) {
+      console.error(error);
+      failed += 1;
+      cloudLastError = formatCloudError(error);
+    }
+  }
+  if (failed === 0 && (!totalLibraryCount || migratedLibraryCount === totalLibraryCount)) {
+    localStorage.removeItem(ACCOUNT_STORAGE_KEY);
+    localStorage.removeItem(ACTIVE_ACCOUNT_KEY);
+  }
+  if (state.meta?.cloudId) localStorage.removeItem(DRAFT_STORAGE_KEY);
+  await loadCloudCharacters({ render: false });
+  if (isCloudAdmin()) await loadCloudAdminCharacters({ render: false });
+  cloudAutoSaveStatus = migrated ? `旧保存庫から${migrated}件をクラウド移行済み` : 'クラウド同期待機中';
+  if (!silent && migrated) toast(`旧保存庫から${migrated}件をクラウドへ移行しました`);
+  if (!silent && failed) toast(`${failed}件の旧保存庫移行に失敗しました`);
+  return { migrated, failed };
+}
+
+function ensureActiveCloudCharacterAfterAuth() {
+  if (!isCloudLoggedIn()) return;
+  const ownsCurrent = state.meta?.cloudId && cloudCharacters.some((row) => row.id === state.meta.cloudId);
+  if (ownsCurrent) return;
+  if (cloudCharacters.length) loadCloudCharacterRow(cloudCharacters[0], { preserveCloudId: true, notify: false });
+}
+
+async function handleCloudAuthenticated(options = {}) {
+  if (cloudPostAuthPromise) return cloudPostAuthPromise;
+  cloudPostAuthPromise = (async () => {
+    if (!isCloudLoggedIn()) {
+      cloudProfile = null;
+      cloudCharacters = [];
+      cloudAdminCharacters = [];
+      cloudLastError = '';
+      updateCloudUi();
+      return;
+    }
+    await refreshCloudData({ silent: true });
+    await migrateLegacyCharactersToCloud({ silent: options.silent !== false });
+    await loadCloudCharacters({ render: false });
+    await submitOwnCloudCharacters({ silent: options.silent !== false });
+    await refreshCloudData({ silent: true });
+    ensureActiveCloudCharacterAfterAuth();
+    if (canAutoCloudSync()) scheduleCloudAutoSync();
+    updateCloudUi();
+  })().finally(() => {
+    cloudPostAuthPromise = null;
+  });
+  return cloudPostAuthPromise;
+}
+
 function formatCloudError(error) {
   return error?.message || error?.error_description || String(error || '不明なエラー');
 }
@@ -4064,9 +4428,15 @@ function updateCloudUi() {
     else note.textContent = `${cloudCharacters.length}件のクラウド保存があります。${isCloudAdmin() ? '管理者一覧を利用できます。' : '編集内容は自動で保存・提出されます。'}`;
   }
 
+  const saveStatus = $('#saveStatus');
+  if (saveStatus) {
+    if (!loggedIn) saveStatus.textContent = 'クラウド未ログイン';
+    else saveStatus.textContent = cloudAutoSaveStatus || (state.meta?.cloudId ? 'クラウド同期済み' : 'クラウド未登録');
+  }
+
   const canAuth = Boolean(client) && !cloudBusy;
   const canUseCloud = Boolean(client && loggedIn) && !cloudBusy;
-  ['cloudSignUp', 'cloudLogin'].forEach((id) => {
+  ['cloudSignUp', 'cloudLogin', 'gateCloudSignUp', 'gateCloudLogin'].forEach((id) => {
     const button = $(`#${id}`);
     if (button) button.disabled = !canAuth || loggedIn;
   });
@@ -4077,6 +4447,8 @@ function updateCloudUi() {
     if (button) button.disabled = !canUseCloud;
   });
 
+  updateAuthGate();
+  updateAccountStatus();
   renderCloudSaveStatus();
   renderCloudCharacterList();
   renderCloudAdminCharacterList();
@@ -4241,9 +4613,9 @@ async function initCloud() {
     client.auth.onAuthStateChange((_event, session) => {
       cloudSession = session || null;
       cloudProfile = null;
-      void refreshCloudData({ silent: true });
+      void handleCloudAuthenticated({ silent: true });
     });
-    await refreshCloudData({ silent: true });
+    await handleCloudAuthenticated({ silent: true });
   } catch (error) {
     console.error(error);
     cloudLastError = formatCloudError(error);
@@ -4337,15 +4709,17 @@ async function loadCloudAdminCharacters(options = {}) {
   return cloudAdminCharacters;
 }
 
-async function signUpCloudAccount() {
+async function signUpCloudAccount(source = 'library') {
   const client = getCloudClient();
   if (!client) {
     toast('Supabase接続を初期化できませんでした');
     return;
   }
-  const email = $('#cloudEmail')?.value.trim();
-  const password = $('#cloudPassword')?.value || '';
-  const displayName = $('#cloudDisplayName')?.value.trim() || email?.split('@')[0] || 'プレイヤー';
+  const credentials = getCloudAuthCredentials(source);
+  syncCloudAuthFields(credentials);
+  const email = credentials.email;
+  const password = credentials.password;
+  const displayName = credentials.displayName || email?.split('@')[0] || 'プレイヤー';
   if (!email || !password) {
     toast('メールアドレスとパスワードを入力してください');
     return;
@@ -4359,7 +4733,7 @@ async function signUpCloudAccount() {
     });
     if (error) throw error;
     cloudSession = data?.session || cloudSession;
-    await refreshCloudData({ silent: true });
+    if (data?.session) await handleCloudAuthenticated({ silent: false });
     toast(data?.session ? 'クラウド登録してログインしました' : '確認メールを送信しました。メール認証後にログインしてください');
   } catch (error) {
     console.error(error);
@@ -4370,14 +4744,16 @@ async function signUpCloudAccount() {
   }
 }
 
-async function loginCloudAccount() {
+async function loginCloudAccount(source = 'library') {
   const client = getCloudClient();
   if (!client) {
     toast('Supabase接続を初期化できませんでした');
     return;
   }
-  const email = $('#cloudEmail')?.value.trim();
-  const password = $('#cloudPassword')?.value || '';
+  const credentials = getCloudAuthCredentials(source);
+  syncCloudAuthFields(credentials);
+  const email = credentials.email;
+  const password = credentials.password;
   if (!email || !password) {
     toast('メールアドレスとパスワードを入力してください');
     return;
@@ -4387,7 +4763,7 @@ async function loginCloudAccount() {
     const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error) throw error;
     cloudSession = data?.session || null;
-    await refreshCloudData({ silent: true });
+    await handleCloudAuthenticated({ silent: false });
     toast('クラウドログインしました');
   } catch (error) {
     console.error(error);
@@ -4410,6 +4786,8 @@ async function logoutCloudAccount() {
     cloudCharacters = [];
     cloudAdminCharacters = [];
     cloudLastError = '';
+    cloudLastAutoSaveSnapshot = '';
+    updateCloudUi();
     toast('クラウドログアウトしました');
   } catch (error) {
     console.error(error);
@@ -4431,28 +4809,12 @@ function getCloudSaveMemo() {
 function buildCloudCharacterPayload({ submit = false } = {}) {
   collectBoundInputs();
   syncOfficeLevel();
-  const now = new Date().toISOString();
-  const submitted = Boolean(submit || state.meta?.cloudSubmitted);
-  const submittedAt = submitted ? (submit ? now : state.meta?.cloudSubmittedAt || now) : null;
-  const characterData = cloneCharacterForLibrary(state);
-  characterData.meta = {
-    ...(characterData.meta || {}),
-    cloudId: state.meta?.cloudId || '',
-    cloudSavedAt: now,
-    cloudSubmitted: submitted,
-    cloudSubmittedAt: submittedAt || ''
-  };
-  delete characterData.meta.cloudAdminEditing;
-  delete characterData.meta.cloudAdminOwnerId;
-  delete characterData.meta.cloudAdminOwnerName;
-  return {
+  return buildCloudPayloadFromCharacterData(state, {
     name: getCloudSaveName(),
     memo: getCloudSaveMemo(),
-    data: characterData,
-    submitted,
-    submitted_at: submittedAt,
-    updated_at: now
-  };
+    submit,
+    cloudId: state.meta?.cloudId || ''
+  });
 }
 
 async function saveCurrentCharacterToCloud(options = {}) {
@@ -4521,7 +4883,7 @@ function findCloudCharacterById(characterId) {
 }
 
 function loadCloudCharacterRow(row, options = {}) {
-  const { preserveCloudId = true, adminEditing = false } = options;
+  const { preserveCloudId = true, adminEditing = false, notify = true } = options;
   state = mergeDefaults(row.data || {});
   const ownerName = formatCloudOwner(row);
   state.meta = {
@@ -4544,7 +4906,7 @@ function loadCloudCharacterRow(row, options = {}) {
   populateStateToDom();
   saveState();
   activateTab('basic');
-  toast(adminEditing ? `${row.name || state.profile.characterName || 'キャラクター'}を管理者編集用に読み込みました` : `${row.name || state.profile.characterName || 'キャラクター'}を読み込みました`);
+  if (notify) toast(adminEditing ? `${row.name || state.profile.characterName || 'キャラクター'}を管理者編集用に読み込みました` : `${row.name || state.profile.characterName || 'キャラクター'}を読み込みました`);
 }
 
 function loadCloudCharacter(characterId) {
@@ -4722,16 +5084,9 @@ function logoutAccount() {
 function updateAccountStatus() {
   const status = $('#accountStatus');
   if (!status) return;
-  const account = getActiveAccount();
-  status.textContent = account ? `ログイン: ${account.displayName || account.name}` : '未ログイン';
-  status.classList.toggle('logged-in', Boolean(account));
-
-  const note = $('#accountNote');
-  if (note) {
-    note.textContent = account
-      ? `${account.displayName || account.name} の保存庫に ${account.characters.length}件保存されています。この情報はこのブラウザだけに保存されます。`
-      : 'アカウント名を入力すると、このブラウザ内にキャラクター保存庫を作れます。';
-  }
+  const loggedIn = isCloudLoggedIn();
+  status.textContent = loggedIn ? `クラウド: ${getCloudDisplayName()}` : 'クラウド未ログイン';
+  status.classList.toggle('logged-in', loggedIn);
 }
 
 function cloneCharacterForLibrary(characterData = state) {
@@ -4749,60 +5104,7 @@ function getSavedShareSource(characterData = state, existingEntry = null) {
 }
 
 function saveCurrentCharacterToLibrary() {
-  const activeId = getActiveAccountId();
-  const accounts = getAccounts();
-  const account = accounts[activeId];
-  if (!activeId || !account) {
-    activateTab('library');
-    toast('先に保存庫でログインしてください');
-    return;
-  }
-
-  collectBoundInputs();
-  syncOfficeLevel();
-
-  const now = new Date().toISOString();
-  if (!Array.isArray(account.characters)) account.characters = [];
-  const existingId = state.meta?.libraryId || '';
-  const existing = account.characters.find((entry) => entry.id === existingId);
-  const characterId = existing ? existing.id : makeId('character');
-  const nameInput = $('#librarySaveName');
-  const memoInput = $('#librarySaveMemo');
-  const saveName = (nameInput?.value || '').trim() || state.profile.characterName || existing?.name || '無名キャラクター';
-  const saveMemo = memoInput ? memoInput.value.trim() : existing?.memo || '';
-  const sharedSource = getSavedShareSource(state, existing);
-
-  state.meta = {
-    ...(state.meta || {}),
-    libraryId: characterId,
-    librarySavedAt: now,
-    importedFromShare: Boolean(sharedSource.sharedBy),
-    sharedBy: sharedSource.sharedBy,
-    sharedAt: sharedSource.sharedAt
-  };
-
-  const entry = {
-    id: characterId,
-    name: saveName,
-    memo: saveMemo,
-    createdAt: existing?.createdAt || now,
-    updatedAt: now,
-    sharedBy: sharedSource.sharedBy,
-    sharedAt: sharedSource.sharedAt,
-    data: cloneCharacterForLibrary(state)
-  };
-  account.characters = [
-    entry,
-    ...account.characters.filter((character) => character.id !== characterId)
-  ].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-  account.updatedAt = now;
-  accounts[activeId] = account;
-  setAccounts(accounts);
-  if (nameInput) nameInput.value = saveName;
-  if (memoInput) memoInput.value = saveMemo;
-  saveState();
-  updateLibraryUi();
-  toast('キャラクターを保存しました');
+  void saveCurrentCharacterToCloud({ submit: true });
 }
 
 function loadCharacterFromLibrary(characterId) {
@@ -4911,15 +5213,19 @@ function renderCurrentCharacterSaveSummary() {
   const root = $('#currentCharacterSaveSummary');
   if (!root) return;
   const summary = summarizeCharacterData(state);
-  const savedLabel = state.meta?.libraryId
-    ? `保存IDあり / ${formatDateTime(state.meta.librarySavedAt) || '未同期'}`
-    : '保存庫未登録';
+  const savedLabel = state.meta?.cloudId
+    ? `クラウド登録済み / ${formatDateTime(state.meta.cloudSavedAt) || '同期待ち'}`
+    : 'クラウド未登録';
+  const submitLabel = state.meta?.cloudSubmitted
+    ? `提出済み / ${formatDateTime(state.meta.cloudSubmittedAt) || '-'}`
+    : '未提出';
   const cards = [
     ['キャラクター', summary.name, `PL: ${summary.playerName}`],
     ['階級/レベル', `${summary.grade} / Lv${summary.level}`, summary.specialty],
     ['HP/MP', `${summary.hp} / ${summary.mp}`, '読込時の自動計算値'],
     ['技能点', `${summary.skillUsed} / ${summary.skillOwned}`, `残 ${summary.skillLeft}`],
-    ['保存状態', savedLabel, 'キャラ保存で保存庫へ反映']
+    ['クラウド保存', savedLabel, cloudAutoSaveStatus || '編集時に自動同期'],
+    ['提出状態', submitLabel, 'ログイン中の編集は自動提出']
   ];
   if (state.meta?.importedFromShare) {
     cards.push([
@@ -5004,10 +5310,10 @@ function updateShareCodeFields() {
   if (field) field.value = buildShareImportCodeForState(state);
   const accountRoot = $('#shareAccountInfo');
   if (accountRoot) {
-    const account = getActiveAccount();
+    const account = getShareAccountSnapshot();
     accountRoot.innerHTML = account
       ? `共有者: <strong>${escapeHtml(formatAccountName(account))}</strong>`
-      : '共有者: <strong>未ログイン</strong>';
+      : '共有者: <strong>クラウド未ログイン</strong>';
   }
 }
 
@@ -5037,12 +5343,7 @@ function base64UrlToBase64(value) {
 }
 
 function getShareAccountSnapshot() {
-  const account = getActiveAccount();
-  if (!account) return null;
-  return {
-    name: account.name || account.id || '',
-    displayName: account.displayName || account.name || account.id || ''
-  };
+  return getCloudAccountSnapshot();
 }
 
 function formatAccountName(account) {
@@ -5149,6 +5450,7 @@ function loadSharedCharacterFromHash(options = {}) {
     if (render) {
       populateStateToDom();
       saveState();
+      scheduleCloudAutoSync();
     }
     if (notify) toast('共有キャラクターを読み込みました');
     return true;
@@ -5181,6 +5483,7 @@ function importShareCode() {
     };
     populateStateToDom();
     saveState();
+    scheduleCloudAutoSync();
     activateTab('basic');
     toast(`共有キャラクターを読み込みました（共有者: ${formatAccountName(decoded.sharedBy)}）`);
     return true;
@@ -6049,15 +6352,24 @@ function scheduleRefundRefresh() {
 }
 
 function scheduleSave() {
-  $('#saveStatus').textContent = '編集中...';
+  const status = $('#saveStatus');
+  if (status) status.textContent = canAutoCloudSync() ? 'クラウド同期待機...' : 'クラウド未ログイン';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveState, 350);
   scheduleCloudAutoSync();
 }
 
 function saveState() {
-  localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(state));
-  $('#saveStatus').textContent = '保存済み';
+  if (isCloudLoggedIn() && state.meta?.cloudId) {
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+  } else {
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(state));
+  }
+  const status = $('#saveStatus');
+  if (status) {
+    if (!isCloudLoggedIn()) status.textContent = 'クラウド未ログイン';
+    else status.textContent = cloudAutoSaveStatus || (state.meta?.cloudId ? 'クラウド同期済み' : 'クラウド未登録');
+  }
 }
 
 function loadState() {
@@ -6118,6 +6430,7 @@ function applyJsonText(text) {
   state = mergeDefaults(parsed);
   populateStateToDom();
   saveState();
+  scheduleCloudAutoSync();
   toast('JSONを反映しました');
 }
 
@@ -6161,18 +6474,25 @@ function hookEvents() {
   $('#randomSeed').addEventListener('click', randomSeed);
   $('#rollFixerHistory').addEventListener('click', rollFixerHistory);
   $('#resetSheet').addEventListener('click', resetSheet);
-  $('#saveNow').addEventListener('click', () => { updateAll(false); saveState(); toast('保存しました'); });
+  const saveNowButton = $('#saveNow');
+  if (saveNowButton) saveNowButton.addEventListener('click', () => void saveCurrentCharacterToCloud({ submit: true }));
   $('#openLibrary').addEventListener('click', () => activateTab('library'));
-  $('#saveCharacterToLibrary').addEventListener('click', saveCurrentCharacterToLibrary);
-  $('#loginAccount').addEventListener('click', loginAccount);
-  $('#logoutAccount').addEventListener('click', logoutAccount);
+  const headerSaveButton = $('#saveCharacterToLibrary');
+  if (headerSaveButton) headerSaveButton.addEventListener('click', saveCurrentCharacterToLibrary);
+  const localLoginButton = $('#loginAccount');
+  if (localLoginButton) localLoginButton.addEventListener('click', loginAccount);
+  const localLogoutButton = $('#logoutAccount');
+  if (localLogoutButton) localLogoutButton.addEventListener('click', logoutAccount);
   $('#saveCharacterToLibraryPanel').addEventListener('click', saveCurrentCharacterToLibrary);
   $('#newCharacterFromLibrary').addEventListener('click', newCharacterFromLibrary);
   $('#copyShareCode').addEventListener('click', () => copyText(buildShareImportCodeForState(state), '共有コードをコピーしました'));
   $('#importShareCode').addEventListener('click', importShareCode);
-  $('#savedCharacterList').addEventListener('click', handleSavedCharacterAction);
-  $('#cloudSignUp').addEventListener('click', () => void signUpCloudAccount());
-  $('#cloudLogin').addEventListener('click', () => void loginCloudAccount());
+  const savedCharacterList = $('#savedCharacterList');
+  if (savedCharacterList) savedCharacterList.addEventListener('click', handleSavedCharacterAction);
+  $('#cloudSignUp').addEventListener('click', () => void signUpCloudAccount('library'));
+  $('#cloudLogin').addEventListener('click', () => void loginCloudAccount('library'));
+  $('#gateCloudSignUp').addEventListener('click', () => void signUpCloudAccount('gate'));
+  $('#gateCloudLogin').addEventListener('click', () => void loginCloudAccount('gate'));
   $('#cloudLogout').addEventListener('click', () => void logoutCloudAccount());
   $('#cloudSaveCharacter').addEventListener('click', () => void saveCurrentCharacterToCloud({ submit: true }));
   $('#refreshCloudCharacters').addEventListener('click', () => void refreshCloudData());

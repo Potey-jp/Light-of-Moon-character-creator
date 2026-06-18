@@ -32,6 +32,36 @@ body {
 
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
+.auth-gate {
+  display: none;
+  min-height: 100vh;
+  padding: 28px 16px;
+  place-items: center;
+}
+body.auth-locked {
+  overflow: hidden;
+}
+body.auth-locked .auth-gate {
+  display: grid;
+}
+body.auth-locked .shell,
+body.auth-locked .skill-point-bar {
+  display: none;
+}
+.auth-panel {
+  width: min(720px, 100%);
+  padding: 30px;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) + 6px);
+  background: linear-gradient(135deg, rgba(21,25,35,.98), rgba(16,19,28,.94));
+  box-shadow: var(--shadow);
+}
+.auth-panel h1 {
+  font-size: clamp(2rem, 6vw, 3.6rem);
+}
+.auth-form-grid {
+  margin: 18px 0 14px;
+}
 .shell { width: min(1480px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 132px; }
 .hero {
   display: flex;

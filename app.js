@@ -5309,7 +5309,7 @@ function renderSavedCharacterList() {
     return;
   }
   if (!account.characters.length) {
-    root.innerHTML = '<div class="character-empty">まだ保存されたキャラクターはありません。「このキャラを保存」から登録できます。</div>';
+    root.innerHTML = '<div class="character-empty">まだ保存されたキャラクターはありません。「キャラクターを保存」から登録できます。</div>';
     return;
   }
 

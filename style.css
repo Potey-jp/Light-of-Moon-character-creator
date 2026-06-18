@@ -394,6 +394,16 @@ textarea { resize: vertical; line-height: 1.65; }
 }
 .effect-level-row strong,
 .effect-level-row span { color: var(--text); }
+.effect-level-row.is-disabled {
+  opacity: .62;
+}
+.effect-level-row button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+.requirement-warning {
+  color: var(--gold-2);
+}
 .effect-cell {
   min-width: 360px;
   max-width: 520px;
@@ -609,6 +619,29 @@ textarea { resize: vertical; line-height: 1.65; }
   border-radius: 10px;
   background: rgba(0,0,0,.16);
   color: var(--text);
+}
+.purchase-item.is-disabled {
+  opacity: .68;
+}
+.purchase-item button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+.purchase-item .purchase-availability {
+  margin-top: 8px;
+  color: var(--gold-2);
+  font-size: .82rem;
+}
+.armor-field-refund {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.armor-field-refund small {
+  color: var(--muted);
+  line-height: 1.35;
 }
 .purchase-effect strong {
   display: block;

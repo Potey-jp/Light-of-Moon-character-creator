@@ -1340,7 +1340,7 @@ const ACCOUNT_STORAGE_KEY = 'lomtrpg-character-creator-accounts';
 const ACTIVE_ACCOUNT_KEY = 'lomtrpg-character-creator-active-account';
 const SHARE_CODE_PREFIX = 'LOMTRPG-CHARACTER-CODE-V2';
 const SHARE_CODE_SUFFIX = 'END-LOMTRPG-CHARACTER-CODE';
-const REFUND_WINDOW_MS = 60 * 60 * 1000;
+const REFUND_WINDOW_MS = 30 * 60 * 1000;
 const ACTIVE_TO_WAREHOUSE = { weapons: 'warehouseWeapons', armors: 'warehouseArmors', items: 'warehouseItems' };
 const WAREHOUSE_TO_ACTIVE = { warehouseWeapons: 'weapons', warehouseArmors: 'armors', warehouseItems: 'items' };
 
@@ -1397,8 +1397,11 @@ const DEFAULT_STATE = {
 
 let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
 let saveTimer = null;
+let refundRefreshTimer = null;
 let warehouseRefundDebugUnlocked = false;
 let warehouseDebugBuffer = '';
+let skillRefundDebugUnlocked = false;
+let skillDebugBuffer = '';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -1449,6 +1452,24 @@ function setInputValue(el, value) {
   else el.value = value ?? '';
 }
 
+function normalizeArmorRefunds(refunds) {
+  const normalized = {};
+  ARMOR_RESISTANCE_FIELDS.forEach((field) => {
+    const refund = refunds?.[field.key];
+    if (!refund) return;
+    const from = RESISTANCES.includes(refund.from) ? refund.from : '脆弱';
+    const to = RESISTANCES.includes(refund.to) ? refund.to : from;
+    normalized[field.key] = {
+      from,
+      to,
+      purchasedAt: refund.purchasedAt || '',
+      fromCost: int(refund.fromCost, armorResistanceCostFor(from)),
+      toCost: int(refund.toCost, armorResistanceCostFor(to))
+    };
+  });
+  return normalized;
+}
+
 function normalizeArmorRow(row) {
   const fallback = row?.panic || '脆弱';
   return {
@@ -1462,7 +1483,8 @@ function normalizeArmorRow(row) {
     weight: row?.weight ?? 0,
     cost: row?.cost ?? 0,
     memo: row?.memo || '',
-    purchasedAt: row?.purchasedAt || ''
+    purchasedAt: row?.purchasedAt || '',
+    armorRefunds: normalizeArmorRefunds(row?.armorRefunds)
   };
 }
 
@@ -1553,6 +1575,58 @@ function calculateOfficialArmorCost(row) {
   return ARMOR_RESISTANCE_FIELDS.reduce((sum, field) => sum + armorResistanceCostFor(armor[field.key]), 0);
 }
 
+function armorFieldByKey(fieldKey) {
+  return ARMOR_RESISTANCE_FIELDS.find((field) => field.key === fieldKey) || null;
+}
+
+function getArmorFieldRefundMeta(row, fieldKey) {
+  if (!armorFieldByKey(fieldKey)) return null;
+  return normalizeArmorRefunds(row?.armorRefunds)[fieldKey] || null;
+}
+
+function armorFieldRefundRemainingMs(row, fieldKey) {
+  const meta = getArmorFieldRefundMeta(row, fieldKey);
+  const time = Date.parse(meta?.purchasedAt || '');
+  if (!Number.isFinite(time)) return -1;
+  return REFUND_WINDOW_MS - (Date.now() - time);
+}
+
+function isArmorFieldRefundOpen(row, fieldKey) {
+  return armorFieldRefundRemainingMs(row, fieldKey) > 0;
+}
+
+function canShowArmorFieldRefund(arrayName, row, fieldKey) {
+  if (!isOfficialArmorCatalogRow(row) || !getArmorFieldRefundMeta(row, fieldKey)) return false;
+  if (isArmorFieldRefundOpen(row, fieldKey)) return true;
+  return Boolean(WAREHOUSE_TO_ACTIVE[arrayName] && warehouseRefundDebugUnlocked);
+}
+
+function armorFieldRefundStatusText(arrayName, row, fieldKey) {
+  const meta = getArmorFieldRefundMeta(row, fieldKey);
+  if (!meta) return '';
+  const remaining = armorFieldRefundRemainingMs(row, fieldKey);
+  const refundValue = Math.max(0, int(meta.toCost) - int(meta.fromCost));
+  if (remaining > 0) return `返金可: 残り${Math.ceil(remaining / 60000)}分 / ${formatMoney(refundValue)}`;
+  if (WAREHOUSE_TO_ACTIVE[arrayName] && warehouseRefundDebugUnlocked) return `デバッグ返金可 / ${formatMoney(refundValue)}`;
+  return '返金期限切れ';
+}
+
+function setArmorFieldRefund(row, fieldKey, from, to) {
+  row.armorRefunds = normalizeArmorRefunds(row.armorRefunds);
+  row.armorRefunds[fieldKey] = {
+    from,
+    to,
+    purchasedAt: new Date().toISOString(),
+    fromCost: armorResistanceCostFor(from),
+    toCost: armorResistanceCostFor(to)
+  };
+}
+
+function clearArmorFieldRefund(row, fieldKey) {
+  row.armorRefunds = normalizeArmorRefunds(row.armorRefunds);
+  delete row.armorRefunds[fieldKey];
+}
+
 function isBlankArmorRow(row) {
   const armor = normalizeArmorRow(row);
   return !armor.name
@@ -1611,6 +1685,12 @@ function ensurePurchaseMetadata(row, arrayName, force = false) {
   return row;
 }
 
+function lockLegacyPurchaseMetadata(row, arrayName) {
+  if (!row || row.purchasedAt || isBlankEquipmentRow(arrayName, row)) return row;
+  row.purchasedAt = 'non-refundable';
+  return row;
+}
+
 function stampPurchasedRow(row, arrayName) {
   const copy = structuredCloneSafe(row);
   ensurePurchaseMetadata(copy, arrayName, true);
@@ -1634,12 +1714,14 @@ function isRefundWindowOpen(row) {
 
 function canShowRefundDelete(arrayName, row) {
   if (isBlankEquipmentRow(arrayName, row)) return true;
+  if (equipmentKindFromArrayName(arrayName) === 'armors' && isOfficialArmorCatalogRow(row)) return false;
   if (isRefundWindowOpen(row)) return true;
   return Boolean(WAREHOUSE_TO_ACTIVE[arrayName] && warehouseRefundDebugUnlocked);
 }
 
 function refundStatusText(arrayName, row) {
   if (isBlankEquipmentRow(arrayName, row)) return '';
+  if (equipmentKindFromArrayName(arrayName) === 'armors' && isOfficialArmorCatalogRow(row)) return '';
   const remaining = refundRemainingMs(row);
   if (remaining > 0) return `返金可: 残り${Math.ceil(remaining / 60000)}分`;
   if (WAREHOUSE_TO_ACTIVE[arrayName] && warehouseRefundDebugUnlocked) return 'デバッグ返金可';
@@ -1658,21 +1740,22 @@ function normalizeEquipmentCollections(character) {
   ensureWarehouseState(character);
   character.equipment.weapons = (Array.isArray(character.equipment?.weapons) ? character.equipment.weapons : [])
     .map(normalizeWeaponRow)
-    .map((row) => ensurePurchaseMetadata(row, 'weapons'));
+    .map((row) => lockLegacyPurchaseMetadata(row, 'weapons'));
   character.equipment.armors = mergeCatalogArmorRows(Array.isArray(character.equipment?.armors) ? character.equipment.armors : [])
-    .map((row) => ensurePurchaseMetadata(row, 'armors'));
+    .map(normalizeArmorRow)
+    .map((row) => lockLegacyPurchaseMetadata(row, 'armors'));
   character.equipment.items = (Array.isArray(character.equipment?.items) ? character.equipment.items : [])
     .map(normalizeItemRow)
-    .map((row) => ensurePurchaseMetadata(row, 'items'));
+    .map((row) => lockLegacyPurchaseMetadata(row, 'items'));
   character.warehouse.weapons = character.warehouse.weapons
     .map(normalizeWeaponRow)
-    .map((row) => ensurePurchaseMetadata(row, 'warehouseWeapons'));
+    .map((row) => lockLegacyPurchaseMetadata(row, 'warehouseWeapons'));
   character.warehouse.armors = character.warehouse.armors
     .map(normalizeArmorRow)
-    .map((row) => ensurePurchaseMetadata(row, 'warehouseArmors'));
+    .map((row) => lockLegacyPurchaseMetadata(row, 'warehouseArmors'));
   character.warehouse.items = character.warehouse.items
     .map(normalizeItemRow)
-    .map((row) => ensurePurchaseMetadata(row, 'warehouseItems'));
+    .map((row) => lockLegacyPurchaseMetadata(row, 'warehouseItems'));
 }
 
 function isOfficialArmorCatalogRow(row) {
@@ -1715,8 +1798,27 @@ function normalizeOfficialArmorSet(row, latestEntry = null) {
 function mergeCatalogArmorRows(rows) {
   const normalized = (rows || []).map(normalizeArmorRow);
   const aggregate = createBlankArmorRow('防具耐性セット');
+  aggregate.armorRefunds = {};
   const keep = [];
   let foundCatalogRow = false;
+
+  const copyFieldPurchase = (row, field, resistance) => {
+    aggregate[field.key] = resistance;
+    const meta = getArmorFieldRefundMeta(row, field.key);
+    if (meta) {
+      aggregate.armorRefunds[field.key] = meta;
+      return;
+    }
+    if (isRefundWindowOpen(row)) {
+      aggregate.armorRefunds[field.key] = {
+        from: '脆弱',
+        to: resistance,
+        purchasedAt: row.purchasedAt,
+        fromCost: 0,
+        toCost: armorResistanceCostFor(resistance)
+      };
+    }
+  };
 
   normalized.forEach((row) => {
     if (!isOfficialArmorCatalogRow(row)) {
@@ -1725,15 +1827,14 @@ function mergeCatalogArmorRows(rows) {
     }
     const purchasedFields = ARMOR_RESISTANCE_FIELDS.filter((field) => row[field.key] !== '脆弱');
     if (row.name === '防具耐性セット' || purchasedFields.length > 1) {
-      ARMOR_RESISTANCE_FIELDS.forEach((field) => {
-        if (row[field.key] !== '脆弱') aggregate[field.key] = row[field.key];
-      });
+      purchasedFields.forEach((field) => copyFieldPurchase(row, field, row[field.key]));
       foundCatalogRow = true;
       return;
     }
     const purchase = parseCatalogArmorPurchase(row);
     if (purchase) {
-      aggregate[purchase.field] = purchase.resistance;
+      const field = armorFieldByKey(purchase.field);
+      if (field) copyFieldPurchase(row, field, purchase.resistance);
       foundCatalogRow = true;
       return;
     }
@@ -1906,16 +2007,28 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 }
 
+function renderArmorFieldRefund(arrayName, index, fieldKey) {
+  const row = getArrayByName(arrayName)[index];
+  const status = armorFieldRefundStatusText(arrayName, row, fieldKey);
+  if (!status) return '';
+  const button = canShowArmorFieldRefund(arrayName, row, fieldKey)
+    ? `<button type="button" class="danger small" data-refund-armor-field="${escapeHtml(fieldKey)}" data-array="${escapeHtml(arrayName)}" data-index="${index}">返金</button>`
+    : '';
+  return `<div class="armor-field-refund">${button}<small>${escapeHtml(status)}</small></div>`;
+}
+
 function renderArmorResistanceGroup(arrayName, index, mainField, panicField) {
   return `
     <div class="armor-resistance-group">
       <label class="armor-resistance-field armor-resistance-field-physical">
         <span>耐性</span>
         <select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="${mainField}">${createOptions(RESISTANCES, getArrayByName(arrayName)[index]?.[mainField])}</select>
+        ${renderArmorFieldRefund(arrayName, index, mainField)}
       </label>
       <label class="armor-resistance-field armor-resistance-field-panic">
         <span>混乱耐性</span>
         <select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="${panicField}">${createOptions(RESISTANCES, getArrayByName(arrayName)[index]?.[panicField])}</select>
+        ${renderArmorFieldRefund(arrayName, index, panicField)}
       </label>
     </div>
   `;
@@ -2049,7 +2162,7 @@ function renderDynamicTables() {
       <td><input type="number" data-array="skills" data-index="${index}" data-field="pointCost" value="${row.pointCost ?? 0}" /></td>
       <td><input data-array="skills" data-index="${index}" data-field="requirement" value="${escapeHtml(row.requirement)}" /></td>
       <td><textarea data-array="skills" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
-      <td><button type="button" class="danger small" data-remove="skills" data-index="${index}">削除</button></td>
+      <td>${renderSkillActions('skills', index, row)}</td>
     `;
   });
 
@@ -2059,7 +2172,7 @@ function renderDynamicTables() {
     <td><input type="number" data-array="passives" data-index="${index}" data-field="sl" value="${row.sl ?? 1}" /></td>
     <td><input type="number" data-array="passives" data-index="${index}" data-field="pointCost" value="${row.pointCost ?? 0}" /></td>
     <td><textarea data-array="passives" data-index="${index}" data-field="memo">${escapeHtml(row.memo)}</textarea></td>
-    <td><button type="button" class="danger small" data-remove="passives" data-index="${index}">削除</button></td>
+    <td>${renderSkillActions('passives', index, row)}</td>
   `);
 }
 
@@ -2083,16 +2196,20 @@ function renderCombatEffectCatalog() {
             <h3>${escapeHtml(effect.name)}</h3>
             <p>${escapeHtml(effect.note)}</p>
             <div class="effect-level-list">
-              ${effect.levels.map((level) => `
-                <div class="effect-level-row">
+              ${effect.levels.map((level) => {
+                const optionId = `${effect.id}:${level.key}`;
+                const option = COMBAT_EFFECT_OPTION_MAP[optionId];
+                const availability = getSkillPurchaseAvailability(option);
+                return `
+                <div class="effect-level-row${availability.canPurchase ? '' : ' is-disabled'}">
                   <strong>${escapeHtml(level.label)}</strong>
                   <span>技:${int(level.skill).toLocaleString('ja-JP')}</span>
                   <span>条:${escapeHtml(level.requirement)}</span>
                   <span>光:${escapeHtml(level.lightCost)}</span>
-                  <small>${escapeHtml(level.effect)}</small>
-                  <button type="button" class="primary small" data-learn-combat-skill="${escapeHtml(`${effect.id}:${level.key}`)}">習得</button>
+                  <small>${escapeHtml(level.effect)}${availability.note ? `<br><span class="requirement-warning">${escapeHtml(availability.note)}</span>` : ''}</small>
+                  <button type="button" class="primary small" data-learn-combat-skill="${escapeHtml(optionId)}" ${availability.canPurchase ? '' : 'disabled'}>習得</button>
                 </div>
-              `).join('')}
+              `; }).join('')}
             </div>
           </section>
         `).join('')}
@@ -2116,15 +2233,19 @@ function renderOfficialPassiveCatalog() {
             <h3>${escapeHtml(passive.name)} <small>最大SL:${int(passive.maxSl, 1)}</small></h3>
             <p>${escapeHtml(passive.note)}</p>
             <div class="effect-level-list">
-              ${passive.levels.map((level) => `
-                <div class="effect-level-row official-passive-level-row">
+              ${passive.levels.map((level) => {
+                const optionId = `${passive.id}:${level.key}`;
+                const option = OFFICIAL_PASSIVE_OPTION_MAP[optionId];
+                const availability = getSkillPurchaseAvailability(option);
+                return `
+                <div class="effect-level-row official-passive-level-row${availability.canPurchase ? '' : ' is-disabled'}">
                   <strong>${escapeHtml(level.label)}</strong>
                   <span>技:${int(level.skill).toLocaleString('ja-JP')}</span>
                   <span>条:${escapeHtml(level.requirement)}</span>
-                  <small>${escapeHtml(level.effect)}</small>
-                  <button type="button" class="primary small" data-learn-official-passive="${escapeHtml(`${passive.id}:${level.key}`)}">取得</button>
+                  <small>${escapeHtml(level.effect)}${availability.note ? `<br><span class="requirement-warning">${escapeHtml(availability.note)}</span>` : ''}</small>
+                  <button type="button" class="primary small" data-learn-official-passive="${escapeHtml(optionId)}" ${availability.canPurchase ? '' : 'disabled'}>取得</button>
                 </div>
-              `).join('')}
+              `; }).join('')}
             </div>
           </section>
         `).join('')}
@@ -2133,19 +2254,50 @@ function renderOfficialPassiveCatalog() {
   `).join('');
 }
 
+function getActiveOfficialArmorRow() {
+  return Array.isArray(state.equipment.armors) ? state.equipment.armors.find(isOfficialArmorCatalogRow) : null;
+}
+
+function getArmorPurchaseAvailability(entry) {
+  const armor = getActiveOfficialArmorRow();
+  const current = armor ? normalizeArmorRow(armor)[entry.targetField] : '脆弱';
+  const currentCost = armorResistanceCostFor(current);
+  const targetCost = armorResistanceCostFor(entry.resistance);
+  if (current === entry.resistance) {
+    return { canPurchase: false, buttonLabel: '適用済み', note: `${current}が適用済みです。` };
+  }
+  if (targetCost <= currentCost) {
+    return {
+      canPurchase: false,
+      buttonLabel: '購入不可',
+      note: `${current}から${entry.resistance}への変更は強化ではありません。返金可能な場合は防具欄の返金を使用してください。`
+    };
+  }
+  const delta = targetCost - currentCost;
+  const buttonLabel = currentCost > 0 ? '強化購入' : '購入';
+  const note = currentCost > 0
+    ? `${current}→${entry.resistance}の強化。差額${formatMoney(delta)}のみ30分返金可。`
+    : `${entry.resistance}を購入。30分以内ならこの耐性のみ返金可。`;
+  return { canPurchase: true, buttonLabel, note };
+}
+
 function renderPurchaseItem(group, entry) {
   const effect = entry.effect || '';
+  const availability = group.id === 'armors' && entry.targetField
+    ? getArmorPurchaseAvailability(entry)
+    : { canPurchase: true, buttonLabel: '購入', note: '' };
   return `
-    <section class="purchase-item">
+    <section class="purchase-item${availability.canPurchase ? '' : ' is-disabled'}">
       <div>
         <h3>${escapeHtml(entry.name)}</h3>
         <p>${escapeHtml(entry.description)}</p>
         ${effect ? `<p class="purchase-effect"><strong>特殊効果</strong>${escapeHtml(effect)}</p>` : ''}
+        ${availability.note ? `<p class="purchase-availability">${escapeHtml(availability.note)}</p>` : ''}
       </div>
       <div class="purchase-meta">
         ${(entry.meta || []).map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
       </div>
-      <button type="button" class="primary small" data-purchase-id="${escapeHtml(`${group.id}:${entry.id}`)}">購入</button>
+      <button type="button" class="primary small" data-purchase-id="${escapeHtml(`${group.id}:${entry.id}`)}" ${availability.canPurchase ? '' : 'disabled'}>${escapeHtml(availability.buttonLabel || '購入')}</button>
     </section>
   `;
 }
@@ -2504,6 +2656,139 @@ function hasBasicTrainingPassive() {
   ));
 }
 
+function hasOfficialPassiveById(passiveId, name = '') {
+  const normalizedName = normalizeCombatSkillName(name);
+  return (state.skills.passives || []).some((row) => (
+    row.catalogPassiveId === passiveId
+    || (normalizedName && normalizeCombatSkillName(row.name).includes(normalizedName))
+  ));
+}
+
+function equippedWeaponRequirementText() {
+  const weapons = (state.equipment.weapons || []).map((row) => `${row.name || ''} ${row.type || ''} ${row.memo || ''}`).join(' / ');
+  const upgrades = (state.equipment.upgrades || []).map((row) => `${row.targetName || ''} ${row.upgradeId || ''} ${row.attribute || ''} ${row.memo || ''}`).join(' / ');
+  return `${weapons} / ${upgrades}`;
+}
+
+function hasEquippedWeaponTrait(trait) {
+  const text = equippedWeaponRequirementText();
+  if (trait === '出血' || trait === '燃焼' || trait === '麻痺') {
+    return text.includes(trait);
+  }
+  if (trait === '煙') return text.includes('煙');
+  if (trait === '充電') return text.includes('充電');
+  return false;
+}
+
+function requirementFailures(requirement) {
+  const text = String(requirement || '').trim();
+  if (!text || text === '-' || text === '初期習得' || text === '選択習得') return [];
+  const failures = [];
+  const level = getRankInfo(state.growth.fame).level;
+  Array.from(text.matchAll(/レベル\s*(\d+)\s*以上/g)).forEach((match) => {
+    const requiredLevel = int(match[1]);
+    if (level < requiredLevel) failures.push(`Lv${requiredLevel}以上が必要（現在Lv${level}）`);
+  });
+  if (/任意の武器熟達/.test(text) && !hasOfficialPassiveById('weapon-proficiency', '武器熟達')) {
+    failures.push('武器熟達:〇〇の習得が必要');
+  }
+  if (/もくもく習得/.test(text) && !hasOfficialPassiveById('smoky', 'もくもく')) {
+    failures.push('もくもくの習得が必要');
+  }
+  [
+    ['出血属性武器装備', '出血'],
+    ['燃焼属性武器装備', '燃焼'],
+    ['麻痺属性武器装備', '麻痺'],
+    ['煙武器装備', '煙'],
+    ['充電武器装備', '充電']
+  ].forEach(([label, trait]) => {
+    if (text.includes(label) && !hasEquippedWeaponTrait(trait)) failures.push(`${label}が必要`);
+  });
+  return failures;
+}
+
+function getSkillPurchaseAvailability(option) {
+  const failures = requirementFailures(option?.requirement);
+  return {
+    canPurchase: failures.length === 0,
+    note: failures.length ? failures.join(' / ') : ''
+  };
+}
+
+function stripSkillRefund(row) {
+  if (!row) return null;
+  const copy = structuredCloneSafe(row);
+  delete copy.skillRefund;
+  return copy;
+}
+
+function normalizeSkillRefund(refund) {
+  if (!refund || typeof refund !== 'object' || !refund.purchasedAt) return null;
+  return {
+    purchasedAt: refund.purchasedAt,
+    before: refund.before ? stripSkillRefund(refund.before) : null,
+    cost: Math.max(0, int(refund.cost))
+  };
+}
+
+function skillRefundBefore(row) {
+  const meta = normalizeSkillRefund(row?.skillRefund);
+  if (meta) return meta.before ? structuredCloneSafe(meta.before) : null;
+  return row ? stripSkillRefund(row) : null;
+}
+
+function attachSkillRefund(row, beforeRow) {
+  const next = stripSkillRefund(row);
+  const before = skillRefundBefore(beforeRow);
+  next.skillRefund = {
+    purchasedAt: new Date().toISOString(),
+    before,
+    cost: Math.max(0, int(next.pointCost) - int(before?.pointCost))
+  };
+  return next;
+}
+
+function skillRefundRemainingMs(row) {
+  const meta = normalizeSkillRefund(row?.skillRefund);
+  const time = Date.parse(meta?.purchasedAt || '');
+  if (!Number.isFinite(time)) return -1;
+  return REFUND_WINDOW_MS - (Date.now() - time);
+}
+
+function isCatalogSkillRow(arrayName, row) {
+  if (arrayName === 'skills') return Boolean(row?.catalogId || row?.catalogEffectId);
+  if (arrayName === 'passives') return Boolean(row?.catalogPassiveId || row?.catalogPassiveOptionId);
+  return false;
+}
+
+function canShowSkillRefund(arrayName, row) {
+  if (!isCatalogSkillRow(arrayName, row) || !normalizeSkillRefund(row?.skillRefund)) return false;
+  if (skillRefundRemainingMs(row) > 0) return true;
+  return skillRefundDebugUnlocked;
+}
+
+function skillRefundStatusText(arrayName, row) {
+  if (!isCatalogSkillRow(arrayName, row)) return '';
+  const meta = normalizeSkillRefund(row?.skillRefund);
+  if (!meta) return '返金不可';
+  const remaining = skillRefundRemainingMs(row);
+  const cost = Math.max(0, int(meta.cost));
+  if (remaining > 0) return `返金可: 残り${Math.ceil(remaining / 60000)}分 / 技能点${cost.toLocaleString('ja-JP')}`;
+  if (skillRefundDebugUnlocked) return `デバッグ返金可 / 技能点${cost.toLocaleString('ja-JP')}`;
+  return '返金期限切れ';
+}
+
+function renderSkillActions(arrayName, index, row) {
+  if (!isCatalogSkillRow(arrayName, row)) {
+    return `<button type="button" class="danger small" data-remove="${escapeHtml(arrayName)}" data-index="${index}">削除</button>`;
+  }
+  const button = canShowSkillRefund(arrayName, row)
+    ? `<button type="button" class="danger small" data-refund-skill-row="${escapeHtml(arrayName)}" data-index="${index}">返金</button>`
+    : '';
+  const status = skillRefundStatusText(arrayName, row);
+  return `<div class="row-actions">${button}${status ? `<small class="refund-status">${escapeHtml(status)}</small>` : ''}</div>`;
+}
+
 function getCombatSkillLightCost(row) {
   if (isBasicSkillCostTarget(row)) return hasBasicTrainingPassive() ? '0' : '1';
   return row.lightCost || '';
@@ -2530,7 +2815,8 @@ function migrateCombatSkillRows(rows) {
         effects: [],
         catalogId: row.catalogId || '',
         catalogEffectId: row.catalogEffectId || '',
-        memo: row.memo || ''
+        memo: row.memo || '',
+        skillRefund: normalizeSkillRefund(row.skillRefund)
       });
     }
     effects.forEach((id) => {
@@ -2564,19 +2850,26 @@ function ensureInitialCombatSkills(rows) {
 function learnCombatSkillOption(optionId) {
   const option = COMBAT_EFFECT_OPTION_MAP[optionId];
   if (!option) return;
+  const availability = getSkillPurchaseAvailability(option);
+  if (!availability.canPurchase) {
+    toast(`習得条件を満たしていません: ${availability.note}`);
+    renderCombatEffectCatalog();
+    return;
+  }
   const row = combatSkillRowFromOption(option);
   const existingIndex = state.skills.combat.findIndex((skill) => (
     (skill.catalogEffectId && skill.catalogEffectId === option.effectId)
     || normalizeCombatSkillName(skill.name) === normalizeCombatSkillName(option.name)
   ));
   if (existingIndex >= 0) {
-    state.skills.combat[existingIndex] = { ...state.skills.combat[existingIndex], ...row };
+    state.skills.combat[existingIndex] = attachSkillRefund({ ...state.skills.combat[existingIndex], ...row }, state.skills.combat[existingIndex]);
     toast(`${option.name}を${option.label}に更新しました`);
   } else {
-    state.skills.combat.push(row);
+    state.skills.combat.push(attachSkillRefund(row, null));
     toast(`${option.name} ${option.label}を習得しました`);
   }
   renderDynamicTables();
+  renderCombatEffectCatalog();
   updateAll(true);
 }
 
@@ -2595,19 +2888,26 @@ function passiveRowFromOfficialOption(option) {
 function learnOfficialPassiveOption(optionId) {
   const option = OFFICIAL_PASSIVE_OPTION_MAP[optionId];
   if (!option) return;
+  const availability = getSkillPurchaseAvailability(option);
+  if (!availability.canPurchase) {
+    toast(`取得条件を満たしていません: ${availability.note}`);
+    renderOfficialPassiveCatalog();
+    return;
+  }
   const row = passiveRowFromOfficialOption(option);
   const existingIndex = option.allowMultiple ? -1 : state.skills.passives.findIndex((passive) => (
     (passive.catalogPassiveId && passive.catalogPassiveId === option.passiveId)
     || normalizeCombatSkillName(passive.name) === normalizeCombatSkillName(option.name)
   ));
   if (existingIndex >= 0) {
-    state.skills.passives[existingIndex] = { ...state.skills.passives[existingIndex], ...row };
+    state.skills.passives[existingIndex] = attachSkillRefund({ ...state.skills.passives[existingIndex], ...row }, state.skills.passives[existingIndex]);
     toast(`${option.name}を${option.label}に更新しました`);
   } else {
-    state.skills.passives.push(row);
+    state.skills.passives.push(attachSkillRefund(row, null));
     toast(`${option.name} ${option.label}を取得しました`);
   }
   renderDynamicTables();
+  renderOfficialPassiveCatalog();
   updateAll(true);
 }
 
@@ -2682,6 +2982,16 @@ function hookDynamicTables() {
         equipWarehouseRow(equipButton.dataset.equipEquipment, int(equipButton.dataset.index));
         return;
       }
+      const refundArmorButton = event.target.closest('[data-refund-armor-field]');
+      if (refundArmorButton) {
+        refundArmorField(refundArmorButton.dataset.array, int(refundArmorButton.dataset.index), refundArmorButton.dataset.refundArmorField);
+        return;
+      }
+      const refundSkillButton = event.target.closest('[data-refund-skill-row]');
+      if (refundSkillButton) {
+        refundSkillRow(refundSkillButton.dataset.refundSkillRow, int(refundSkillButton.dataset.index));
+        return;
+      }
       const btn = event.target.closest('[data-remove]');
       if (!btn) return;
       removeDynamicRow(btn.dataset.remove, int(btn.dataset.index));
@@ -2699,6 +3009,9 @@ function handleDynamicInput(event) {
   if (!target[index]) return;
   target[index][field] = getInputValue(el);
   if (isTrackedEquipmentArray(arrayName)) ensurePurchaseMetadata(target[index], arrayName);
+  if (arrayName === 'armors' && ARMOR_RESISTANCE_FIELDS.some((item) => item.key === field)) {
+    renderEquipmentCatalog();
+  }
   if (arrayName === 'equipmentUpgrades' && field === 'upgradeId') {
     target[index] = normalizeEquipmentUpgradeRow(target[index]);
     renderDynamicTables();
@@ -2776,12 +3089,46 @@ function purchaseArmorResistance(entry) {
   const armor = getArmorPurchaseTarget();
   const field = ARMOR_RESISTANCE_FIELDS.find((item) => item.key === entry.targetField);
   if (!field) return;
+  const current = armor[entry.targetField] || '脆弱';
+  const currentCost = armorResistanceCostFor(current);
+  const targetCost = armorResistanceCostFor(entry.resistance);
+  if (current === entry.resistance) {
+    toast(`${entry.targetFullLabel}は既に${entry.resistance}です`);
+    return;
+  }
+  if (targetCost <= currentCost) {
+    toast(`${current}から${entry.resistance}への変更は購入できません。返金可能な場合は防具欄の返金を使用してください`);
+    renderEquipmentCatalog();
+    return;
+  }
   armor[entry.targetField] = entry.resistance;
+  setArmorFieldRefund(armor, entry.targetField, current, entry.resistance);
   Object.assign(armor, normalizeOfficialArmorSet(armor, entry));
-  ensurePurchaseMetadata(armor, 'armors', true);
+  armor.purchasedAt = armor.purchasedAt || 'field-managed';
   renderDynamicTables();
+  renderEquipmentCatalog();
   updateAll(true);
-  toast(`${entry.targetFullLabel}を${entry.resistance}に更新しました`);
+  const delta = targetCost - currentCost;
+  toast(`${entry.targetFullLabel}を${entry.resistance}に強化しました（返金対象:${formatMoney(delta)}）`);
+}
+
+function refundArmorField(arrayName, index, fieldKey) {
+  const target = getArrayByName(arrayName);
+  const armor = target[index];
+  const field = armorFieldByKey(fieldKey);
+  const meta = getArmorFieldRefundMeta(armor, fieldKey);
+  if (!armor || !field || !meta) return;
+  if (!canShowArmorFieldRefund(arrayName, armor, fieldKey)) {
+    toast('この耐性は返金期限切れです');
+    return;
+  }
+  armor[fieldKey] = meta.from || '脆弱';
+  clearArmorFieldRefund(armor, fieldKey);
+  Object.assign(armor, normalizeOfficialArmorSet(armor));
+  renderDynamicTables();
+  renderEquipmentCatalog();
+  updateAll(true);
+  toast(`${field.fullLabel}を${armor[fieldKey]}へ戻しました`);
 }
 
 function moveEquipmentRow(sourceName, targetName, index, message) {
@@ -2810,6 +3157,27 @@ function removeDynamicRow(name, index) {
   getArrayByName(name).splice(index, 1);
   renderDynamicTables();
   updateAll(true);
+}
+
+function refundSkillRow(arrayName, index) {
+  const target = getArrayByName(arrayName);
+  const row = target[index];
+  const meta = normalizeSkillRefund(row?.skillRefund);
+  if (!meta) return;
+  if (!canShowSkillRefund(arrayName, row)) {
+    toast('この技能・パッシブは返金期限切れです');
+    return;
+  }
+  if (meta.before) {
+    target[index] = structuredCloneSafe(meta.before);
+  } else {
+    target.splice(index, 1);
+  }
+  renderDynamicTables();
+  renderCombatEffectCatalog();
+  renderOfficialPassiveCatalog();
+  updateAll(true);
+  toast('技能点を返金しました');
 }
 
 function useItem(index) {
@@ -2907,6 +3275,7 @@ function populateStateToDom() {
   });
   updateSpecialtyPassiveOptions();
   renderDynamicTables();
+  renderEquipmentCatalog();
   updateAll(false);
 }
 
@@ -3173,6 +3542,9 @@ function updateAll(shouldSave = true) {
   updateBottomSkillBar();
   updateRewardPreview();
   updateLibraryUi();
+  renderCombatEffectCatalog();
+  renderOfficialPassiveCatalog();
+  scheduleRefundRefresh();
   if (shouldSave) scheduleSave();
 }
 
@@ -4450,10 +4822,6 @@ function buildCcfoliaMemo() {
     .filter((row) => row.name || row.memo)
     .map((row) => formatPassiveSkillLine(row, { singleLine: true }))
     .join('\n') || '・なし';
-  const choiceLines = specialty.choices
-    .map((choice) => `・${choice.name}${choice.name === selected.name ? '（選択中）' : ''}: ${oneLine(choice.text)}`)
-    .join('\n');
-
   return [
     '【LoMTRPG ココフォリア用メモ】',
     `階級:${d.rank.grade} Lv:${d.level}`,
@@ -4464,8 +4832,6 @@ function buildCcfoliaMemo() {
     `能力値補正:${formatSpecialtyMods(specialty)}`,
     `固有パッシブ:${specialty.fixed.name} - ${oneLine(specialty.fixed.text)}`,
     `選択パッシブ:${selected.name} - ${oneLine(selected.text)}`,
-    '選択候補:',
-    choiceLines,
     'その他パッシブ:',
     extraPassives,
     '',
@@ -4765,26 +5131,70 @@ function rollFixerHistory() {
 
 function handleWarehouseDebugShortcut(event) {
   const activeTab = $('.tab.active')?.dataset.tab;
-  if (activeTab !== 'warehouse') return;
+  if (activeTab !== 'warehouse' && activeTab !== 'skills') return;
   if (event.key === 'Shift') return;
+  const currentBuffer = activeTab === 'warehouse' ? warehouseDebugBuffer : skillDebugBuffer;
+  const setBuffer = (value) => {
+    if (activeTab === 'warehouse') warehouseDebugBuffer = value;
+    else skillDebugBuffer = value;
+  };
   if (!event.shiftKey) {
-    warehouseDebugBuffer = '';
+    setBuffer('');
     return;
   }
   if (event.key === 'Delete') {
-    warehouseDebugBuffer = 'DELETE';
+    setBuffer('DELETE');
   } else if (/^[a-z]$/i.test(event.key)) {
-    warehouseDebugBuffer = `${warehouseDebugBuffer}${event.key.toUpperCase()}`.slice(-6);
+    setBuffer(`${currentBuffer}${event.key.toUpperCase()}`.slice(-6));
   } else {
     return;
   }
-  if (warehouseDebugBuffer === 'DELETE') {
-    warehouseRefundDebugUnlocked = true;
-    warehouseDebugBuffer = '';
+  const nextBuffer = activeTab === 'warehouse' ? warehouseDebugBuffer : skillDebugBuffer;
+  if (nextBuffer === 'DELETE') {
+    if (activeTab === 'warehouse') {
+      warehouseRefundDebugUnlocked = true;
+      warehouseDebugBuffer = '';
+      toast('倉庫デバッグ: 返金削除を表示しました');
+    } else {
+      skillRefundDebugUnlocked = true;
+      skillDebugBuffer = '';
+      toast('技能デバッグ: 返金ボタンを表示しました');
+    }
     renderDynamicTables();
     updateAll(false);
-    toast('倉庫デバッグ: 返金削除を表示しました');
   }
+}
+
+function allRefundTrackedRows() {
+  ensureWarehouseState();
+  return [
+    ...state.equipment.weapons,
+    ...state.equipment.armors,
+    ...state.equipment.items,
+    ...state.warehouse.weapons,
+    ...state.warehouse.armors,
+    ...state.warehouse.items
+  ];
+}
+
+function allRefundRemainingMs() {
+  const rowRemaining = allRefundTrackedRows().map(refundRemainingMs);
+  const armorRows = [...state.equipment.armors, ...state.warehouse.armors];
+  const armorRemaining = armorRows.flatMap((row) => ARMOR_RESISTANCE_FIELDS.map((field) => armorFieldRefundRemainingMs(row, field.key)));
+  const skillRemaining = [...state.skills.combat, ...state.skills.passives].map(skillRefundRemainingMs);
+  return [...rowRemaining, ...armorRemaining, ...skillRemaining];
+}
+
+function scheduleRefundRefresh() {
+  clearTimeout(refundRefreshTimer);
+  const nextExpiry = allRefundRemainingMs()
+    .filter((ms) => ms > 0)
+    .sort((a, b) => a - b)[0];
+  if (!nextExpiry) return;
+  refundRefreshTimer = setTimeout(() => {
+    renderDynamicTables();
+    updateAll(false);
+  }, Math.min(nextExpiry + 1000, 2147483647));
 }
 
 function scheduleSave() {

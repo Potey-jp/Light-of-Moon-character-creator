@@ -2803,8 +2803,12 @@ function skillRefundStatusText(arrayName, row) {
   return '返金期限切れ';
 }
 
+function canDeleteSkillWithoutRefund(arrayName, row) {
+  return ['skills', 'passives'].includes(arrayName) && int(row?.pointCost) <= 0;
+}
+
 function renderSkillActions(arrayName, index, row) {
-  if (!isCatalogSkillRow(arrayName, row)) {
+  if (!isCatalogSkillRow(arrayName, row) || canDeleteSkillWithoutRefund(arrayName, row)) {
     return `<button type="button" class="danger small" data-remove="${escapeHtml(arrayName)}" data-index="${index}">削除</button>`;
   }
   const button = canShowSkillRefund(arrayName, row)
@@ -3184,6 +3188,8 @@ function equipWarehouseRow(sourceName, index) {
 function removeDynamicRow(name, index) {
   getArrayByName(name).splice(index, 1);
   renderDynamicTables();
+  if (name === 'skills') renderCombatEffectCatalog();
+  if (name === 'passives') renderOfficialPassiveCatalog();
   updateAll(true);
 }
 

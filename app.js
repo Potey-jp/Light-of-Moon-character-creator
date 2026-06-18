@@ -1345,6 +1345,7 @@ const ACTIVE_TO_WAREHOUSE = { weapons: 'warehouseWeapons', armors: 'warehouseArm
 const WAREHOUSE_TO_ACTIVE = { warehouseWeapons: 'weapons', warehouseArmors: 'armors', warehouseItems: 'items' };
 const SUPABASE_PROJECT_URL = 'https://ntjcjjlpgqghclikaays.supabase.co/rest/v1/';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_lMvvz60vjIWAZCPuNL5FDA_3JAj8V2q';
+const CLOUD_AUTO_SAVE_DELAY_MS = 1600;
 
 const DEFAULT_STATE = {
   meta: { libraryId: '', librarySavedAt: '', cloudId: '', cloudSavedAt: '', cloudSubmitted: false, cloudSubmittedAt: '', importedFromShare: false, sharedBy: null, sharedAt: '' },
@@ -1412,6 +1413,11 @@ let cloudAdminCharacters = [];
 let cloudBusy = false;
 let cloudLoading = false;
 let cloudLastError = '';
+let cloudAutoSaveTimer = null;
+let cloudAutoSaveInFlight = false;
+let cloudAutoSavePending = false;
+let cloudAutoSaveStatus = '';
+let cloudLastAutoSaveSnapshot = '';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -3869,6 +3875,65 @@ function setCloudBusy(value) {
   updateCloudUi();
 }
 
+function canAutoCloudSync() {
+  return Boolean(getCloudClient() && getCloudUser() && cloudProfile && cloudProfile.role !== 'admin');
+}
+
+function getCloudAutoSaveSnapshot() {
+  const data = cloneCharacterForLibrary(state);
+  data.meta = {
+    ...(data.meta || {}),
+    librarySavedAt: '',
+    cloudSavedAt: '',
+    cloudSubmittedAt: '',
+    sharedAt: ''
+  };
+  return JSON.stringify({
+    name: getCloudSaveName(),
+    memo: getCloudSaveMemo(),
+    data
+  });
+}
+
+function scheduleCloudAutoSync() {
+  if (!canAutoCloudSync()) return;
+  const snapshot = getCloudAutoSaveSnapshot();
+  if (snapshot === cloudLastAutoSaveSnapshot) return;
+  clearTimeout(cloudAutoSaveTimer);
+  cloudAutoSaveStatus = '自動同期待機中';
+  updateCloudUi();
+  cloudAutoSaveTimer = setTimeout(() => {
+    void runCloudAutoSync();
+  }, CLOUD_AUTO_SAVE_DELAY_MS);
+}
+
+async function runCloudAutoSync() {
+  if (!canAutoCloudSync()) return;
+  const snapshot = getCloudAutoSaveSnapshot();
+  if (snapshot === cloudLastAutoSaveSnapshot) return;
+  if (cloudAutoSaveInFlight || cloudBusy || cloudLoading) {
+    cloudAutoSavePending = true;
+    scheduleCloudAutoSync();
+    return;
+  }
+
+  cloudAutoSaveInFlight = true;
+  cloudAutoSavePending = false;
+  cloudAutoSaveStatus = '自動同期中';
+  updateCloudUi();
+  try {
+    const row = await saveCurrentCharacterToCloud({ submit: true, silent: true });
+    cloudAutoSaveStatus = row ? '自動同期済み' : '自動同期失敗';
+  } finally {
+    cloudAutoSaveInFlight = false;
+    updateCloudUi();
+  }
+
+  if (cloudAutoSavePending || getCloudAutoSaveSnapshot() !== cloudLastAutoSaveSnapshot) {
+    scheduleCloudAutoSync();
+  }
+}
+
 function updateCloudUi() {
   const client = getCloudClient();
   const user = getCloudUser();
@@ -3892,7 +3957,7 @@ function updateCloudUi() {
     if (cloudLastError) note.textContent = `クラウドエラー: ${cloudLastError}`;
     else if (!client) note.textContent = 'Supabase接続を初期化できませんでした。';
     else if (!loggedIn) note.textContent = '登録済みの場合はログイン、新規の場合は表示名を入れてクラウド登録してください。';
-    else note.textContent = `${cloudCharacters.length}件のクラウド保存があります。${isCloudAdmin() ? '管理者一覧を利用できます。' : 'GMへ提出すると管理者に表示されます。'}`;
+    else note.textContent = `${cloudCharacters.length}件のクラウド保存があります。${isCloudAdmin() ? '管理者一覧を利用できます。' : '編集内容は自動で保存・提出されます。'}`;
   }
 
   const canAuth = Boolean(client) && !cloudBusy;
@@ -3903,7 +3968,7 @@ function updateCloudUi() {
   });
   const logoutButton = $('#cloudLogout');
   if (logoutButton) logoutButton.disabled = !canUseCloud;
-  ['cloudSaveCharacter', 'cloudSubmitCharacter', 'refreshCloudCharacters'].forEach((id) => {
+  ['cloudSaveCharacter', 'refreshCloudCharacters'].forEach((id) => {
     const button = $(`#${id}`);
     if (button) button.disabled = !canUseCloud;
   });
@@ -3919,7 +3984,8 @@ function renderCloudSaveStatus() {
   const cards = [
     ['クラウドID', state.meta?.cloudId ? '登録済み' : '未登録', state.meta?.cloudId || 'クラウド保存で作成'],
     ['保存日時', formatDateTime(state.meta?.cloudSavedAt), 'クラウド側の最終保存'],
-    ['提出状態', state.meta?.cloudSubmitted ? '提出済み' : '未提出', state.meta?.cloudSubmittedAt ? `提出日時: ${formatDateTime(state.meta.cloudSubmittedAt)}` : 'GMへ提出で管理者一覧に表示']
+    ['提出状態', state.meta?.cloudSubmitted ? '提出済み' : '未提出', state.meta?.cloudSubmittedAt ? `提出日時: ${formatDateTime(state.meta.cloudSubmittedAt)}` : '編集時に自動提出'],
+    ['自動同期', cloudAutoSaveStatus || (isCloudLoggedIn() ? (isCloudAdmin() ? '管理者は対象外' : '待機中') : '未ログイン'), 'プレイヤー権限でログイン中のみ自動保存・提出']
   ];
   root.innerHTML = cards.map(([label, value, note]) => `
     <article class="derived-card">
@@ -3953,7 +4019,6 @@ function renderCloudCharacterCard(row, mode = 'own') {
     `
     : `
       <button type="button" class="primary small" data-cloud-action="load" data-cloud-id="${escapeHtml(row.id)}">読み込む</button>
-      <button type="button" class="primary small" data-cloud-action="submit" data-cloud-id="${escapeHtml(row.id)}">GMへ提出</button>
       <button type="button" class="ghost small" data-cloud-action="share" data-cloud-id="${escapeHtml(row.id)}">共有コードコピー</button>
       <button type="button" class="danger small" data-cloud-action="delete" data-cloud-id="${escapeHtml(row.id)}">削除</button>
     `;
@@ -4245,7 +4310,7 @@ function buildCloudCharacterPayload({ submit = false } = {}) {
 }
 
 async function saveCurrentCharacterToCloud(options = {}) {
-  const { submit = false } = options;
+  const { submit = false, silent = false } = options;
   const client = getCloudClient();
   const user = getCloudUser();
   if (!client || !user) {
@@ -4257,7 +4322,9 @@ async function saveCurrentCharacterToCloud(options = {}) {
   try {
     const payload = buildCloudCharacterPayload({ submit });
     let result;
-    if (state.meta?.cloudId) {
+    const ownsCurrentCloudRow = Boolean(state.meta?.cloudId && cloudCharacters.some((row) => row.id === state.meta.cloudId));
+    const shouldUpdateCloudRow = Boolean(state.meta?.cloudId && (ownsCurrentCloudRow || !state.meta?.importedFromShare));
+    if (shouldUpdateCloudRow) {
       result = await client
         .from('characters')
         .update(payload)
@@ -4286,12 +4353,13 @@ async function saveCurrentCharacterToCloud(options = {}) {
     if (memoInput) memoInput.value = row.memo || '';
     saveState();
     await refreshCloudData({ silent: true });
-    toast(submit ? 'キャラクターをGMへ提出しました' : 'クラウド保存しました');
+    cloudLastAutoSaveSnapshot = getCloudAutoSaveSnapshot();
+    if (!silent) toast(submit ? 'クラウド同期しました' : 'クラウド保存しました');
     return row;
   } catch (error) {
     console.error(error);
     cloudLastError = formatCloudError(error);
-    toast(submit ? 'GM提出に失敗しました' : 'クラウド保存に失敗しました');
+    if (!silent) toast(submit ? 'クラウド同期に失敗しました' : 'クラウド保存に失敗しました');
     return null;
   } finally {
     setCloudBusy(false);
@@ -4300,41 +4368,6 @@ async function saveCurrentCharacterToCloud(options = {}) {
 
 function findCloudCharacterById(characterId) {
   return [...cloudCharacters, ...cloudAdminCharacters].find((row) => row.id === characterId) || null;
-}
-
-async function submitCloudCharacterById(characterId) {
-  const client = getCloudClient();
-  const row = cloudCharacters.find((entry) => entry.id === characterId);
-  if (!client || !row) return;
-  if (state.meta?.cloudId === characterId) {
-    await saveCurrentCharacterToCloud({ submit: true });
-    return;
-  }
-  const now = new Date().toISOString();
-  const characterData = mergeDefaults(row.data || {});
-  characterData.meta = {
-    ...(characterData.meta || {}),
-    cloudId: row.id,
-    cloudSavedAt: row.updated_at || '',
-    cloudSubmitted: true,
-    cloudSubmittedAt: now
-  };
-  setCloudBusy(true);
-  try {
-    const { error } = await client
-      .from('characters')
-      .update({ data: characterData, submitted: true, submitted_at: now, updated_at: now })
-      .eq('id', characterId);
-    if (error) throw error;
-    await refreshCloudData({ silent: true });
-    toast('保存済みキャラクターをGMへ提出しました');
-  } catch (error) {
-    console.error(error);
-    cloudLastError = formatCloudError(error);
-    toast('GM提出に失敗しました');
-  } finally {
-    setCloudBusy(false);
-  }
 }
 
 function loadCloudCharacterRow(row, options = {}) {
@@ -4347,7 +4380,7 @@ function loadCloudCharacterRow(row, options = {}) {
     cloudSavedAt: preserveCloudId ? row.updated_at || '' : '',
     cloudSubmitted: Boolean(row.submitted),
     cloudSubmittedAt: row.submitted_at || '',
-    importedFromShare: preserveCloudId ? Boolean(state.meta?.importedFromShare) : true,
+    importedFromShare: preserveCloudId ? false : true,
     sharedBy: preserveCloudId ? state.meta?.sharedBy || null : { name: row.owner_id || '', displayName: ownerName },
     sharedAt: preserveCloudId ? state.meta?.sharedAt || '' : row.submitted_at || row.updated_at || ''
   };
@@ -4426,7 +4459,6 @@ function handleCloudCharacterAction(event) {
   const characterId = button.dataset.cloudId;
   const action = button.dataset.cloudAction;
   if (action === 'load') loadCloudCharacter(characterId);
-  if (action === 'submit') void submitCloudCharacterById(characterId);
   if (action === 'share') copyCloudShareCode(characterId, 'own');
   if (action === 'delete') void deleteCloudCharacter(characterId);
   if (action === 'admin-load') loadCloudAdminCharacter(characterId);
@@ -5833,6 +5865,7 @@ function scheduleSave() {
   $('#saveStatus').textContent = '編集中...';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveState, 350);
+  scheduleCloudAutoSync();
 }
 
 function saveState() {
@@ -5954,11 +5987,14 @@ function hookEvents() {
   $('#cloudSignUp').addEventListener('click', () => void signUpCloudAccount());
   $('#cloudLogin').addEventListener('click', () => void loginCloudAccount());
   $('#cloudLogout').addEventListener('click', () => void logoutCloudAccount());
-  $('#cloudSaveCharacter').addEventListener('click', () => void saveCurrentCharacterToCloud());
-  $('#cloudSubmitCharacter').addEventListener('click', () => void saveCurrentCharacterToCloud({ submit: true }));
+  $('#cloudSaveCharacter').addEventListener('click', () => void saveCurrentCharacterToCloud({ submit: true }));
   $('#refreshCloudCharacters').addEventListener('click', () => void refreshCloudData());
   $('#cloudCharacterList').addEventListener('click', handleCloudCharacterAction);
   $('#cloudAdminCharacterList').addEventListener('click', handleCloudCharacterAction);
+  ['librarySaveName', 'librarySaveMemo'].forEach((id) => {
+    const input = $(`#${id}`);
+    if (input) input.addEventListener('input', () => scheduleCloudAutoSync());
+  });
   $('#addRewardItem').addEventListener('click', () => addDynamicRow('rewardItems'));
   $('#applyRewards').addEventListener('click', applyRewards);
   $('#equipmentCatalog').addEventListener('click', (event) => {

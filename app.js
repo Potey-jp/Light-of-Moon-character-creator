@@ -658,7 +658,7 @@ function buildProstheticSeries(location, statLabels, statKey) {
 const COMBAT_EFFECT_GROUPS = [
   {
     label: '基本スキル',
-    note: '基本攻撃として扱う技能です。斬撃・貫通・打撃は技能点0で選択習得できます。',
+    note: '基本攻撃・守備として扱う技能です。斬撃・貫通・打撃・回避・防御は技能点0で選択習得できます。',
     effects: [
       {
         id: 'basic-slash',
@@ -682,6 +682,22 @@ const COMBAT_EFFECT_GROUPS = [
         note: '打撃属性の基本攻撃技能。',
         levels: [
           { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '1', effect: '打撃属性の基本攻撃を行う。基礎熟練取得時はコスト0。' }
+        ]
+      },
+      {
+        id: 'basic-dodge',
+        name: '回避',
+        note: '回避ダイスを使用する基本守備技能。',
+        levels: [
+          { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '1', effect: '回避ダイスで攻撃を回避する。基礎熟練取得時はコスト0。' }
+        ]
+      },
+      {
+        id: 'basic-defense',
+        name: '防御',
+        note: '防御ダイスを使用する基本守備技能。',
+        levels: [
+          { key: 'sl1', label: 'SL1', skill: 0, requirement: '選択習得', lightCost: '1', effect: '防御ダイスで攻撃を受け止める。基礎熟練取得時はコスト0。' }
         ]
       }
     ]
@@ -955,7 +971,7 @@ const COMBAT_EFFECT_OPTIONS = COMBAT_EFFECT_GROUPS.flatMap((group) => group.effe
 
 const COMBAT_EFFECT_OPTION_MAP = Object.fromEntries(COMBAT_EFFECT_OPTIONS.map((option) => [option.optionId, option]));
 const BASIC_SKILL_COST_NAMES = ['斬撃', '貫通', '打撃', 'ダイス追加', '回避', '防御'];
-const BASIC_SKILL_COST_EFFECT_IDS = ['basic-slash', 'basic-pierce', 'basic-blunt', 'dice-add'];
+const BASIC_SKILL_COST_EFFECT_IDS = ['basic-slash', 'basic-pierce', 'basic-blunt', 'basic-dodge', 'basic-defense', 'dice-add'];
 
 function passiveLevel(sl, skill, requirement, effect) {
   return { key: `sl${sl}`, sl, label: `SL${sl}`, skill, requirement, effect };

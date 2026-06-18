@@ -3918,7 +3918,15 @@ function getCloudAuthCredentials(source = 'library') {
 function syncCloudAuthFields({ email = '', password = '', displayName = '' } = {}) {
   ['cloudEmail', 'gateCloudEmail'].forEach((id) => { const el = $(`#${id}`); if (el && email) el.value = email; });
   ['cloudPassword', 'gateCloudPassword'].forEach((id) => { const el = $(`#${id}`); if (el && password) el.value = password; });
-  ['cloudDisplayName', 'gateCloudDisplayName'].forEach((id) => { const el = $(`#${id}`); if (el && displayName) el.value = displayName; });
+  setCloudDisplayNameInputs(displayName);
+}
+
+function setCloudDisplayNameInputs(displayName = getCloudDisplayName()) {
+  if (!displayName) return;
+  ['cloudDisplayName', 'gateCloudDisplayName'].forEach((id) => {
+    const el = $(`#${id}`);
+    if (el && el !== document.activeElement) el.value = displayName;
+  });
 }
 
 function updateAuthGate() {
@@ -4434,12 +4442,16 @@ function updateCloudUi() {
     else saveStatus.textContent = cloudAutoSaveStatus || (state.meta?.cloudId ? 'クラウド同期済み' : 'クラウド未登録');
   }
 
+  if (loggedIn) setCloudDisplayNameInputs();
+
   const canAuth = Boolean(client) && !cloudBusy;
   const canUseCloud = Boolean(client && loggedIn) && !cloudBusy;
   ['cloudSignUp', 'cloudLogin', 'gateCloudSignUp', 'gateCloudLogin'].forEach((id) => {
     const button = $(`#${id}`);
     if (button) button.disabled = !canAuth || loggedIn;
   });
+  const updateDisplayNameButton = $('#updateCloudDisplayName');
+  if (updateDisplayNameButton) updateDisplayNameButton.disabled = !canUseCloud;
   const logoutButton = $('#cloudLogout');
   if (logoutButton) logoutButton.disabled = !canUseCloud;
   ['cloudSaveCharacter', 'refreshCloudCharacters'].forEach((id) => {
@@ -4449,6 +4461,7 @@ function updateCloudUi() {
 
   updateAuthGate();
   updateAccountStatus();
+  updateShareCodeFields();
   renderCloudSaveStatus();
   renderCloudCharacterList();
   renderCloudAdminCharacterList();
@@ -4769,6 +4782,50 @@ async function loginCloudAccount(source = 'library') {
     console.error(error);
     cloudLastError = formatCloudError(error);
     toast('クラウドログインに失敗しました');
+  } finally {
+    setCloudBusy(false);
+  }
+}
+
+async function updateCloudDisplayName() {
+  const client = getCloudClient();
+  const user = getCloudUser();
+  if (!client || !user) {
+    toast('先にログインしてください');
+    return;
+  }
+  const displayName = ($('#cloudDisplayName')?.value || $('#gateCloudDisplayName')?.value || '').trim();
+  if (!displayName) {
+    toast('表示名を入力してください');
+    return;
+  }
+  setCloudBusy(true);
+  try {
+    const authResult = await client.auth.updateUser({ data: { display_name: displayName } });
+    if (authResult.error) throw authResult.error;
+    let result = await client
+      .from('profiles')
+      .update({ display_name: displayName })
+      .eq('id', user.id)
+      .select('id, display_name, role')
+      .maybeSingle();
+    if (!result.error && !result.data) {
+      result = await client
+        .from('profiles')
+        .insert({ id: user.id, display_name: displayName })
+        .select('id, display_name, role')
+        .maybeSingle();
+    }
+    if (result.error) throw result.error;
+    cloudProfile = result.data || { ...(cloudProfile || {}), id: user.id, display_name: displayName, role: cloudProfile?.role || 'player' };
+    setCloudDisplayNameInputs(displayName);
+    await refreshCloudData({ silent: true });
+    updateShareCodeFields();
+    toast('表示名を更新しました');
+  } catch (error) {
+    console.error(error);
+    cloudLastError = formatCloudError(error);
+    toast('表示名の更新に失敗しました');
   } finally {
     setCloudBusy(false);
   }
@@ -6491,6 +6548,7 @@ function hookEvents() {
   if (savedCharacterList) savedCharacterList.addEventListener('click', handleSavedCharacterAction);
   $('#cloudSignUp').addEventListener('click', () => void signUpCloudAccount('library'));
   $('#cloudLogin').addEventListener('click', () => void loginCloudAccount('library'));
+  $('#updateCloudDisplayName').addEventListener('click', () => void updateCloudDisplayName());
   $('#gateCloudSignUp').addEventListener('click', () => void signUpCloudAccount('gate'));
   $('#gateCloudLogin').addEventListener('click', () => void loginCloudAccount('gate'));
   $('#cloudLogout').addEventListener('click', () => void logoutCloudAccount());

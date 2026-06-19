@@ -2709,6 +2709,45 @@ function hasOfficialPassiveById(passiveId, name = '') {
   ));
 }
 
+function getOfficialPassiveRows(passiveId, name = '') {
+  const normalizedName = normalizeCombatSkillName(name);
+  return (state.skills.passives || []).filter((row) => (
+    row.catalogPassiveId === passiveId
+    || (normalizedName && normalizeCombatSkillName(row.name).includes(normalizedName))
+  ));
+}
+
+function getHighestOfficialPassiveSl(passiveId, name = '') {
+  return getOfficialPassiveRows(passiveId, name).reduce((max, row) => Math.max(max, int(row.sl, 1)), 0);
+}
+
+function getPassiveDerivedBonuses() {
+  const sturdySl = getHighestOfficialPassiveSl('sturdy', '頑健');
+  const calmSl = getHighestOfficialPassiveSl('calm', '冷静');
+  const carrierSl = getHighestOfficialPassiveSl('carrier', '運搬術');
+  const speedDiceSl = getHighestOfficialPassiveSl('speed-dice', '速度');
+  const lightInitialSl = getHighestOfficialPassiveSl('light-initial-up', '光初期値上昇');
+  const dodgeMasterySl = getHighestOfficialPassiveSl('dodge-mastery', '熟達:回避');
+  const defenseMasterySl = getHighestOfficialPassiveSl('defense-mastery', '熟達:防御');
+  const versatileSl = getHighestOfficialPassiveSl('weapon-proficiency-versatile', '武器熟達:多才');
+
+  let speedDiceExtra = 0;
+  if (speedDiceSl >= 3) speedDiceExtra = 2;
+  else if (speedDiceSl >= 2) speedDiceExtra = int(state.emotion.level, 1) >= 3 ? 2 : 1;
+  else if (speedDiceSl >= 1) speedDiceExtra = 1;
+
+  return {
+    hp: sturdySl * 12,
+    mp: calmSl * 12,
+    maxWeight: carrierSl * 5,
+    lightMax: lightInitialSl ? 1 : 0,
+    speedDiceExtra,
+    dodge: dodgeMasterySl,
+    defense: defenseMasterySl,
+    hit: versatileSl
+  };
+}
+
 function equippedWeaponRequirementText() {
   const weapons = (state.equipment.weapons || []).map((row) => `${row.name || ''} ${row.type || ''} ${row.memo || ''}`).join(' / ');
   const upgrades = (state.equipment.upgrades || []).map((row) => `${row.targetName || ''} ${row.upgradeId || ''} ${row.attribute || ''} ${row.memo || ''}`).join(' / ');
@@ -3503,20 +3542,22 @@ function getSpeedExpression(dexBonus, choicesOrMode = 'max', extraDice = 0) {
 function getDerived() {
   const stats = getTotalStats();
   const bonuses = Object.fromEntries(STAT_KEYS.map((key) => [key, bonusOf(stats[key])]));
+  const passiveBonuses = getPassiveDerivedBonuses();
   const rank = getRankInfo(state.growth.fame);
   const officeLevel = getOfficeLevelInfo(state.office.fame);
   const level = rank.level;
-  const hp = stats.CON * 4 + level * 5;
-  const mp = stats.POW * 2 + level * 5;
-  const dodge = bonuses.DEX + level;
-  const defense = bonuses.CON + level;
-  const hit = bonuses.AGE + level;
-  const maxWeight = stats.STR;
-  const lightMax = Math.max(0, 3 + int(state.combat.lightMaxExtra));
+  const hp = stats.CON * 4 + level * 5 + passiveBonuses.hp;
+  const mp = stats.POW * 2 + level * 5 + passiveBonuses.mp;
+  const dodge = bonuses.DEX + level + passiveBonuses.dodge;
+  const defense = bonuses.CON + level + passiveBonuses.defense;
+  const hit = bonuses.AGE + level + passiveBonuses.hit;
+  const maxWeight = stats.STR + passiveBonuses.maxWeight;
+  const lightMax = Math.max(0, 3 + int(state.combat.lightMaxExtra) + passiveBonuses.lightMax);
   const insanityMax = 5 + bonuses.POW;
   const speedChoices = getSpeedChoicesForBonus(bonuses.DEX);
-  const speed = getSpeedExpression(bonuses.DEX, speedChoices, state.combat.speedDiceExtra);
-  return { stats, bonuses, rank, level, officeLevel, hp, mp, dodge, defense, hit, maxWeight, lightMax, insanityMax, speed };
+  const speedDiceExtra = int(state.combat.speedDiceExtra) + passiveBonuses.speedDiceExtra;
+  const speed = getSpeedExpression(bonuses.DEX, speedChoices, speedDiceExtra);
+  return { stats, bonuses, passiveBonuses, rank, level, officeLevel, hp, mp, dodge, defense, hit, maxWeight, lightMax, insanityMax, speed, speedDiceExtra };
 }
 
 function getTotals() {
@@ -3676,15 +3717,15 @@ function signed(value) {
 function updateDerivedCards() {
   const d = getDerived();
   const cards = [
-    ['HP', d.hp, 'CON×4 + レベル×5'],
-    ['MP', d.mp, 'POW×2 + レベル×5'],
-    ['回避力', d.dodge, 'DEXボーナス + レベル'],
-    ['防御力', d.defense, 'CONボーナス + レベル'],
-    ['命中力', d.hit, 'AGEボーナス + レベル'],
-    ['最大重量', d.maxWeight, 'STRと同値'],
-    ['光最大値', d.lightMax, '初期3 + 補正'],
+    ['HP', d.hp, `CON×4 + レベル×5${d.passiveBonuses.hp ? ` + パッシブ${signed(d.passiveBonuses.hp)}` : ''}`],
+    ['MP', d.mp, `POW×2 + レベル×5${d.passiveBonuses.mp ? ` + パッシブ${signed(d.passiveBonuses.mp)}` : ''}`],
+    ['回避力', d.dodge, `DEXボーナス + レベル${d.passiveBonuses.dodge ? ` + パッシブ${signed(d.passiveBonuses.dodge)}` : ''}`],
+    ['防御力', d.defense, `CONボーナス + レベル${d.passiveBonuses.defense ? ` + パッシブ${signed(d.passiveBonuses.defense)}` : ''}`],
+    ['命中力', d.hit, `AGEボーナス + レベル${d.passiveBonuses.hit ? ` + パッシブ${signed(d.passiveBonuses.hit)}` : ''}`],
+    ['最大重量', d.maxWeight, `STR${d.passiveBonuses.maxWeight ? ` + パッシブ${signed(d.passiveBonuses.maxWeight)}` : 'と同値'}`],
+    ['光最大値', d.lightMax, `初期3 + 補正${d.passiveBonuses.lightMax ? ` + パッシブ${signed(d.passiveBonuses.lightMax)}` : ''}`],
     ['狂気点上限', d.insanityMax, '5 + POWボーナス'],
-    ['速度', d.speed, formatSpeedChoiceSummary(d.bonuses.DEX)],
+    ['速度', d.speed, formatDerivedSpeedSummary(d)],
     ['階級/レベル', `${d.rank.grade} / ${d.level}`, `名声点 ${int(state.growth.fame)}（${formatProgressNext(state.growth.fame, d.rank, '点')}）`],
     ['事務所Lv', d.officeLevel.level, `事務所名声 ${int(state.office.fame)}（${formatProgressNext(state.office.fame, d.officeLevel, '点')}）`]
   ];
@@ -3742,6 +3783,11 @@ function formatSpeedChoiceSummary(dexBonus) {
   return choices
     .map((choice, index) => `B${(index + 1) * 2}:${choice === 'min' ? '最低値' : '最大値'}`)
     .join(' / ');
+}
+
+function formatDerivedSpeedSummary(d) {
+  const base = formatSpeedChoiceSummary(d.bonuses.DEX);
+  return d.passiveBonuses.speedDiceExtra ? `${base} / パッシブ速度ダイス+${d.passiveBonuses.speedDiceExtra}` : base;
 }
 
 function updateInfoTables() {
@@ -5606,7 +5652,7 @@ ${statLine}
 
 ■副能力値
 HP:${d.hp}　MP:${d.mp}　回避力:${d.dodge}　防御力:${d.defense}　命中力:${d.hit}
-光:${int(state.combat.lightCurrent)}/${d.lightMax}　速度:${d.speed}（${formatSpeedChoiceSummary(d.bonuses.DEX)}）　最大重量:${d.maxWeight}
+光:${int(state.combat.lightCurrent)}/${d.lightMax}　速度:${d.speed}（${formatDerivedSpeedSummary(d)}）　最大重量:${d.maxWeight}
 狂気点:${int(state.mind.insanityCurrent)}/${d.insanityMax}　ねじれ点:${int(state.mind.twistPoint)}
 感情レベル:${int(state.emotion.level, 1)}　PE:${int(state.emotion.pe)}　NE:${int(state.emotion.ne)}　混乱:${state.conditions.confused ? 'あり' : 'なし'}
 状態:${conditionLine || 'なし'}
@@ -5848,7 +5894,7 @@ function buildTekeyInfo() {
     `PL:${state.profile.playerName || '-'} / ${state.profile.role || '-'}`,
     `出身:${ORIGINS[state.build.origin]?.label || '-'} / 得意分野:${specialty.label} / 階級:${d.rank.grade} Lv:${d.level}`,
     `能力値:${statLine}`,
-    `副能力値:HP${d.hp} MP${d.mp} 光${int(state.combat.lightCurrent)}/${d.lightMax} 速度${d.speed}（${formatSpeedChoiceSummary(d.bonuses.DEX)}） 命中${d.hit} 回避${d.dodge} 防御${d.defense}`,
+    `副能力値:HP${d.hp} MP${d.mp} 光${int(state.combat.lightCurrent)}/${d.lightMax} 速度${d.speed}（${formatDerivedSpeedSummary(d)}） 命中${d.hit} 回避${d.dodge} 防御${d.defense}`,
     `パッシブ:固有 ${specialty.fixed.name}（${oneLine(specialty.fixed.text)}） / 選択 ${selected.name}（${oneLine(selected.text)}）`,
     `感情:Lv${int(state.emotion.level, 1)} PE${int(state.emotion.pe)} NE${int(state.emotion.ne)} / 混乱:${state.conditions.confused ? 'あり' : 'なし'} / 状態:${buildConditionLine() || 'なし'}`,
     `経歴表:${state.profile.fixerHistory || '-'}`,
@@ -6058,7 +6104,7 @@ function buildCcfoliaMemo() {
     '【LoMTRPG ココフォリア用メモ】',
     `階級:${d.rank.grade} Lv:${d.level}`,
     `能力値:${statLine}`,
-    `副能力値:HP${d.hp} MP${d.mp} 光${int(state.combat.lightCurrent)}/${d.lightMax} 速度${d.speed}（${formatSpeedChoiceSummary(d.bonuses.DEX)}） 命中${d.hit} 回避${d.dodge} 防御${d.defense}`,
+    `副能力値:HP${d.hp} MP${d.mp} 光${int(state.combat.lightCurrent)}/${d.lightMax} 速度${d.speed}（${formatDerivedSpeedSummary(d)}） 命中${d.hit} 回避${d.dodge} 防御${d.defense}`,
     '',
     '■パッシブ詳細',
     `能力値補正:${formatSpecialtyMods(specialty)}`,
@@ -6246,16 +6292,16 @@ function buildTekeyPalette() {
     '2d6+{STRB}+{LEVEL} 水泳判定',
     '2d6+{STRB}+{LEVEL} 跳躍判定',
     '2d6+{DEXB}+{LEVEL} 隠密判定',
-    '2d6+{DEXB}+{LEVEL} 回避判定',
+    '2d6+{DODGE} 回避判定',
     '2d6+{DEXB}+{LEVEL} 登攀判定',
     '2d6+{DEXB}+{LEVEL} 逃走判定',
     '2d6+{DEXB}+{LEVEL} 逃走妨害判定',
     '2d6+{AGEB}+{LEVEL} 応急手当判定',
     '2d6+{AGEB}+{LEVEL} 隠蔽判定',
     '2d6+{AGEB}+{LEVEL} 開錠判定',
-    '2d6+{AGEB}+{LEVEL} 命中判定',
+    '2d6+{HIT} 命中判定',
     '2d6+{CONB}+{LEVEL} 生死判定',
-    '2d6+{CONB}+{LEVEL} 防御判定',
+    '2d6+{DEFENSE} 防御判定',
     '2d6+{CONB}+{LEVEL} 生命抵抗力判定',
     '2d6+{POWB} 精神力判定',
     '2d6+{INTB}+{LEVEL} 追跡判定',

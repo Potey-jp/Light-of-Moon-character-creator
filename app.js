@@ -1598,6 +1598,21 @@ function formatArmorResistanceLine(row) {
   return `物理[斬撃:${armor.slash} / 貫通:${armor.pierce} / 打撃:${armor.blunt}] 混乱[斬撃:${armor.slashPanic} / 貫通:${armor.piercePanic} / 打撃:${armor.bluntPanic}]`;
 }
 
+function formatArmorResistanceMemoLine(row) {
+  const armor = normalizeArmorRow(row);
+  return `物理[斬撃：${armor.slash}/貫通：${armor.pierce}/打撃：${armor.blunt}]\n混乱[斬撃：${armor.slashPanic}/貫通：${armor.piercePanic}/打撃：${armor.bluntPanic}]`;
+}
+
+function hasCcfoliaArmorMemoContent(row) {
+  const armor = normalizeArmorRow(row);
+  return Boolean(
+    armor.name
+    || armor.memo
+    || int(armor.weight)
+    || ARMOR_RESISTANCE_FIELDS.some((field) => armor[field.key] !== '脆弱')
+  );
+}
+
 function formatProstheticLine(row, singleLine = false) {
   const prosthetic = normalizeProstheticRow(row);
   const line = `・${prosthetic.name || '無名義体'} [${prosthetic.rank || '-'} / ${prosthetic.location || '-'}] ${prosthetic.stat || '-'} 重量:${prosthetic.weight || 0} 価格:${formatMoney(prosthetic.cost || 0)} ${prosthetic.memo || ''}`;
@@ -6084,8 +6099,12 @@ function buildCcfoliaMemo() {
     .map((row) => `・${row.name || '無名武器'} [${row.rank}/${row.type}] 威力:${row.power || '-'} 命中:${row.hit || '-'} 重量:${row.weight || 0} ${oneLine(row.memo)}`)
     .join('\n') || '・なし';
   const armors = state.equipment.armors
-    .filter((row) => row.name || row.memo)
-    .map((row) => `・${row.name || '無名防具'} ${formatArmorResistanceLine(row)} 重量:${row.weight || 0} ${oneLine(row.memo)}`)
+    .filter(hasCcfoliaArmorMemoContent)
+    .map((row) => `・${row.name || '無名防具'} 重量:${row.weight || 0} ${oneLine(row.memo)}`)
+    .join('\n') || '・なし';
+  const armorResistances = state.equipment.armors
+    .filter(hasCcfoliaArmorMemoContent)
+    .map((row) => `・${row.name || '無名防具'}\n${formatArmorResistanceMemoLine(row)}`)
     .join('\n') || '・なし';
   const items = state.equipment.items
     .filter((row) => row.name || row.memo)
@@ -6106,13 +6125,6 @@ function buildCcfoliaMemo() {
     `能力値:${statLine}`,
     `副能力値:HP${d.hp} MP${d.mp} 光${int(state.combat.lightCurrent)}/${d.lightMax} 速度${d.speed}（${formatDerivedSpeedSummary(d)}） 命中${d.hit} 回避${d.dodge} 防御${d.defense}`,
     '',
-    '■パッシブ詳細',
-    `能力値補正:${formatSpecialtyMods(specialty)}`,
-    `固有パッシブ:${specialty.fixed.name} - ${oneLine(specialty.fixed.text)}`,
-    `選択パッシブ:${selected.name} - ${oneLine(selected.text)}`,
-    'その他パッシブ:',
-    extraPassives,
-    '',
     '■装備',
     '武器:',
     weapons,
@@ -6121,19 +6133,30 @@ function buildCcfoliaMemo() {
     'アイテム:',
     items,
     '',
-    '■戦闘技能',
-    combatSkills,
-    '',
     '■事務所',
     `事務所:${state.office.name || '-'} / 代表:${state.office.leader || '-'}`,
-    '戦術スキル:',
-    tactics,
     '',
     '■リソース',
     `所持金:${formatMoney(state.growth.cashStart)} / 使用:${formatMoney(totals.moneyUsed)} / 残:${formatMoney(cashLeft)}`,
     `装備費:${formatMoney(totals.equipmentCost)}`,
     `技能点:${int(state.growth.skillPointStart)} / 使用:${totals.skillUsed} / 残:${skillLeft}`,
-    `重量:${totals.totalWeight.toLocaleString('ja-JP')}/${d.maxWeight}（${getWeightPenalty(totals.totalWeight, d.maxWeight).label}）`
+    `重量:${totals.totalWeight.toLocaleString('ja-JP')}/${d.maxWeight}（${getWeightPenalty(totals.totalWeight, d.maxWeight).label}）`,
+    '',
+    '■耐性情報',
+    armorResistances,
+    '',
+    '■各種パッシブ',
+    `能力値補正:${formatSpecialtyMods(specialty)}`,
+    `固有パッシブ:${specialty.fixed.name} - ${oneLine(specialty.fixed.text)}`,
+    `選択パッシブ:${selected.name} - ${oneLine(selected.text)}`,
+    'その他パッシブ:',
+    extraPassives,
+    '',
+    '■戦術スキル',
+    tactics,
+    '',
+    '■戦闘技能',
+    combatSkills
   ].join('\n');
 }
 function buildCcfoliaCommands() {

@@ -529,6 +529,20 @@ textarea { resize: vertical; line-height: 1.65; }
   color: var(--text);
   line-height: 1.55;
 }
+
+.upgrade-inline-note {
+  display: block;
+  margin-top: 4px;
+  color: var(--gold-2);
+  font-size: .78rem;
+  font-weight: 800;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.upgrade-inline-note.multi-line {
+  white-space: normal;
+}
 .purchase-catalog {
   display: grid;
   gap: 12px;

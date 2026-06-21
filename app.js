@@ -1593,14 +1593,160 @@ function createBlankArmorRow(name = '') {
   };
 }
 
-function formatArmorResistanceLine(row) {
+function getEquipmentUpgradeTargetName(row) {
+  return oneLine(row?.targetName || row?.name || '');
+}
+
+function getEquipmentUpgradesForTarget(targetName, targetType) {
+  const normalizedTarget = oneLine(targetName);
+  if (!normalizedTarget) return [];
+  return (state.equipment.upgrades || [])
+    .map(normalizeEquipmentUpgradeRow)
+    .filter((row) => {
+      const def = getEquipmentUpgradeDef(row.upgradeId);
+      return def.target === targetType && getEquipmentUpgradeTargetName(row) === normalizedTarget;
+    });
+}
+
+function getEquippedWeaponTargetOptions(selected = '') {
+  const seen = new Set();
+  const options = [{ value: '', label: '未選択' }];
+  (state.equipment.weapons || []).forEach((row) => {
+    const weapon = normalizeWeaponRow(row);
+    const name = oneLine(weapon.name);
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    options.push({ value: name, label: `${name}（${weapon.rank}/${weapon.type || '-'}）` });
+  });
+  const current = oneLine(selected);
+  if (current && !seen.has(current)) options.push({ value: current, label: `${current}（装備中にありません）` });
+  return options;
+}
+
+function findEquippedWeaponByName(name) {
+  const targetName = oneLine(name);
+  if (!targetName) return null;
+  return (state.equipment.weapons || []).map(normalizeWeaponRow).find((row) => oneLine(row.name) === targetName) || null;
+}
+
+function syncEquipmentUpgradeTargetDefaults(row) {
+  const normalized = normalizeEquipmentUpgradeRow(row);
+  const def = getEquipmentUpgradeDef(normalized.upgradeId);
+  if (def.target === 'weapon') {
+    const weapon = findEquippedWeaponByName(normalized.targetName);
+    if (weapon) normalized.rank = weapon.rank;
+  }
+  return normalized;
+}
+
+function getWeaponUpgradeModifiers(row) {
+  const weapon = normalizeWeaponRow(row);
+  const mods = { power: 0, hit: 0, weight: 0, statusAptitudes: [], statusInflicts: {} };
+  getEquipmentUpgradesForTarget(weapon.name, 'weapon').forEach((upgrade) => {
+    const def = getEquipmentUpgradeDef(upgrade.upgradeId);
+    const value = int(upgrade.value);
+    const attr = oneLine(upgrade.attribute);
+    if (def.id === 'weight-adjust') {
+      mods.power += value;
+      mods.weight += value;
+    } else if (def.id === 'quality-up') {
+      mods.power += Math.max(0, value);
+    } else if (def.id === 'optimize') {
+      mods.hit += Math.max(0, value);
+    } else if (def.id === 'status-aptitude' && attr && value) {
+      mods.statusAptitudes.push(attr);
+    } else if (def.id === 'status-inflict' && attr && value) {
+      mods.statusInflicts[attr] = (mods.statusInflicts[attr] || 0) + Math.abs(value);
+    }
+  });
+  mods.statusAptitudes = [...new Set(mods.statusAptitudes)];
+  return mods;
+}
+
+function getArmorUpgradeModifiers(row) {
   const armor = normalizeArmorRow(row);
-  return `物理[斬撃:${armor.slash} / 貫通:${armor.pierce} / 打撃:${armor.blunt}] 混乱[斬撃:${armor.slashPanic} / 貫通:${armor.piercePanic} / 打撃:${armor.bluntPanic}]`;
+  const mods = { slash: 0, pierce: 0, blunt: 0, slashPanic: 0, piercePanic: 0, bluntPanic: 0 };
+  const fieldMap = { '斬撃': 'slash', '貫通': 'pierce', '打撃': 'blunt' };
+  getEquipmentUpgradesForTarget(armor.name, 'armor').forEach((upgrade) => {
+    const def = getEquipmentUpgradeDef(upgrade.upgradeId);
+    const baseField = fieldMap[upgrade.attribute];
+    const value = Math.abs(int(upgrade.value));
+    if (!baseField || !value) return;
+    if (def.id === 'physical-reduction') mods[baseField] += value;
+    if (def.id === 'panic-reduction') mods[`${baseField}Panic`] += value;
+  });
+  return mods;
+}
+
+function formatBaseWithUpgrade(baseValue, bonus, fallback = '-') {
+  const base = oneLine(baseValue) || fallback;
+  return bonus ? `${base}${signed(bonus)}` : base;
+}
+
+function getEffectiveWeaponPower(row) {
+  const weapon = normalizeWeaponRow(row);
+  return int(weapon.power) + getWeaponUpgradeModifiers(weapon).power;
+}
+
+function getEffectiveWeaponHit(row) {
+  const weapon = normalizeWeaponRow(row);
+  return int(weapon.hit) + getWeaponUpgradeModifiers(weapon).hit;
+}
+
+function getEffectiveWeaponWeight(row) {
+  const weapon = normalizeWeaponRow(row);
+  const mods = getWeaponUpgradeModifiers(weapon);
+  const base = clampNumber(weapon.weight);
+  const value = base + mods.weight;
+  return base > 0 || mods.weight ? Math.max(1, value) : Math.max(0, value);
+}
+
+function formatWeaponPowerDisplay(row) {
+  const weapon = normalizeWeaponRow(row);
+  return formatBaseWithUpgrade(weapon.power, getWeaponUpgradeModifiers(weapon).power);
+}
+
+function formatWeaponHitDisplay(row) {
+  const weapon = normalizeWeaponRow(row);
+  return formatBaseWithUpgrade(weapon.hit, getWeaponUpgradeModifiers(weapon).hit, '0');
+}
+
+function formatWeaponWeightDisplay(row) {
+  const weapon = normalizeWeaponRow(row);
+  return formatBaseWithUpgrade(weapon.weight, getWeaponUpgradeModifiers(weapon).weight, '0');
+}
+
+function formatWeaponUpgradeMemoLines(row) {
+  const mods = getWeaponUpgradeModifiers(row);
+  return [
+    ...mods.statusAptitudes.map((name) => `+${name}`),
+    ...Object.entries(mods.statusInflicts).map(([name, value]) => `${name}+${value}`)
+  ];
+}
+
+function formatWeaponMemoText(row) {
+  const weapon = normalizeWeaponRow(row);
+  return [oneLine(weapon.memo), ...formatWeaponUpgradeMemoLines(weapon)].filter(Boolean).join(' / ');
+}
+
+function formatWeaponLine(row, options = {}) {
+  const weapon = normalizeWeaponRow(row);
+  const prefix = options.bullet === false ? '' : '・';
+  return `${prefix}${weapon.name || '無名武器'} [${weapon.rank}/${weapon.type}] 威力:${formatWeaponPowerDisplay(weapon)} 命中:${formatWeaponHitDisplay(weapon)} 重量:${formatWeaponWeightDisplay(weapon)} ${formatWeaponMemoText(weapon)}`;
+}
+
+function getArmorResistanceDisplay(row, fieldKey) {
+  const armor = normalizeArmorRow(row);
+  const reduction = getArmorUpgradeModifiers(armor)[fieldKey] || 0;
+  return `${armor[fieldKey] || '脆弱'}${reduction ? `-${reduction}` : ''}`;
+}
+
+function formatArmorResistanceLine(row) {
+  return `物理[斬撃:${getArmorResistanceDisplay(row, 'slash')} / 貫通:${getArmorResistanceDisplay(row, 'pierce')} / 打撃:${getArmorResistanceDisplay(row, 'blunt')}] 混乱[斬撃:${getArmorResistanceDisplay(row, 'slashPanic')} / 貫通:${getArmorResistanceDisplay(row, 'piercePanic')} / 打撃:${getArmorResistanceDisplay(row, 'bluntPanic')}]`;
 }
 
 function formatArmorResistanceMemoLine(row) {
-  const armor = normalizeArmorRow(row);
-  return `物理[斬撃：${armor.slash}/貫通：${armor.pierce}/打撃：${armor.blunt}]\n混乱[斬撃：${armor.slashPanic}/貫通：${armor.piercePanic}/打撃：${armor.bluntPanic}]`;
+  return `物理[斬撃：${getArmorResistanceDisplay(row, 'slash')}/貫通：${getArmorResistanceDisplay(row, 'pierce')}/打撃：${getArmorResistanceDisplay(row, 'blunt')}]\n混乱[斬撃：${getArmorResistanceDisplay(row, 'slashPanic')}/貫通：${getArmorResistanceDisplay(row, 'piercePanic')}/打撃：${getArmorResistanceDisplay(row, 'bluntPanic')}]`;
 }
 
 function hasCcfoliaArmorMemoContent(row) {
@@ -2070,24 +2216,26 @@ function renderArmorFieldRefund(arrayName, index, fieldKey) {
   return `<div class="armor-field-refund">${button}<small>${escapeHtml(status)}</small></div>`;
 }
 
-function renderArmorResistanceValue(value) {
-  return `<strong class="armor-resistance-value">${escapeHtml(value || '脆弱')}</strong>`;
+function renderArmorResistanceValue(value, displayValue = value) {
+  return `<strong class="armor-resistance-value">${escapeHtml(displayValue || value || '脆弱')}</strong>`;
 }
 
 function renderArmorResistanceGroup(arrayName, index, mainField, panicField) {
   const row = getArrayByName(arrayName)[index] || {};
   const mainValue = row[mainField] || '脆弱';
   const panicValue = row[panicField] || '脆弱';
+  const mainDisplay = arrayName === 'armors' ? getArmorResistanceDisplay(row, mainField) : mainValue;
+  const panicDisplay = arrayName === 'armors' ? getArmorResistanceDisplay(row, panicField) : panicValue;
   return `
     <div class="armor-resistance-group">
       <label class="armor-resistance-field armor-resistance-field-physical">
         <span>耐性</span>
-        ${renderArmorResistanceValue(mainValue)}
+        ${renderArmorResistanceValue(mainValue, mainDisplay)}
         ${renderArmorFieldRefund(arrayName, index, mainField)}
       </label>
       <label class="armor-resistance-field armor-resistance-field-panic">
         <span>混乱耐性</span>
-        ${renderArmorResistanceValue(panicValue)}
+        ${renderArmorResistanceValue(panicValue, panicDisplay)}
         ${renderArmorFieldRefund(arrayName, index, panicField)}
       </label>
     </div>
@@ -2110,17 +2258,32 @@ function renderEquipmentActions(arrayName, index, row, options = {}) {
   return `<div class="row-actions">${buttons.join('')}${renderRefundStatus(arrayName, row)}</div>`;
 }
 
+function renderUpgradeInlineNote(text, multiLine = false) {
+  return text ? `<small class="upgrade-inline-note${multiLine ? ' multi-line' : ''}">${escapeHtml(text)}</small>` : '';
+}
+
+function renderWeaponUpgradeMemoPreview(row, active) {
+  if (!active) return '';
+  const lines = formatWeaponUpgradeMemoLines(row);
+  return lines.length ? `<small class="upgrade-inline-note multi-line">${lines.map(escapeHtml).join('<br>')}</small>` : '';
+}
+
 function renderWeaponCells(row, index, arrayName) {
   const weapon = normalizeWeaponRow(row);
+  const active = arrayName === 'weapons';
+  const mods = active ? getWeaponUpgradeModifiers(weapon) : { power: 0, hit: 0, weight: 0 };
+  const powerNote = active && mods.power ? renderUpgradeInlineNote(`威力${formatWeaponPowerDisplay(weapon)}`) : '';
+  const hitNote = active && mods.hit ? renderUpgradeInlineNote(`命中${formatWeaponHitDisplay(weapon)}`) : '';
+  const weightNote = active && mods.weight ? renderUpgradeInlineNote(`重量${formatWeaponWeightDisplay(weapon)}`) : '';
   return `
     <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="name" value="${escapeHtml(weapon.name)}" /></td>
     <td><select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="rank">${createOptions(WEAPON_RANKS, weapon.rank)}</select></td>
     <td><select data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="type">${createOptions(ATTACK_TYPES, weapon.type)}</select></td>
-    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="power" value="${escapeHtml(weapon.power)}" /></td>
-    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="hit" value="${escapeHtml(weapon.hit)}" /></td>
-    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="weight" value="${weapon.weight ?? 0}" /></td>
+    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="power" value="${escapeHtml(weapon.power)}" />${powerNote}</td>
+    <td><input data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="hit" value="${escapeHtml(weapon.hit)}" />${hitNote}</td>
+    <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="weight" value="${weapon.weight ?? 0}" />${weightNote}</td>
     <td><input type="number" data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="cost" value="${weapon.cost ?? 0}" /></td>
-    <td><textarea data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="memo">${escapeHtml(weapon.memo)}</textarea></td>
+    <td><textarea data-array="${escapeHtml(arrayName)}" data-index="${index}" data-field="memo">${escapeHtml(weapon.memo)}</textarea>${renderWeaponUpgradeMemoPreview(weapon, active)}</td>
     <td>${renderEquipmentActions(arrayName, index, weapon)}</td>
   `;
 }
@@ -2188,16 +2351,19 @@ function renderDynamicTables() {
 
   if (!Array.isArray(state.equipment.upgrades)) state.equipment.upgrades = [];
   renderRows('equipmentUpgradeRows', state.equipment.upgrades, 'equipmentUpgrades', (row, index) => {
-    const normalized = normalizeEquipmentUpgradeRow(row);
+    const normalized = syncEquipmentUpgradeTargetDefaults(row);
     state.equipment.upgrades[index] = normalized;
     const def = getEquipmentUpgradeDef(normalized.upgradeId);
+    const targetControl = def.target === 'weapon'
+      ? `<select data-array="equipmentUpgrades" data-index="${index}" data-field="targetName">${createLabeledOptions(getEquippedWeaponTargetOptions(normalized.targetName), normalized.targetName)}</select>`
+      : `<input data-array="equipmentUpgrades" data-index="${index}" data-field="targetName" value="${escapeHtml(normalized.targetName)}" placeholder="${escapeHtml(def.targetLabel)}名" />`;
     const rankDisabled = def.rankCostKey ? '' : ' disabled';
     const attributeOptions = getEquipmentUpgradeAttributeOptions(def);
     const attributeDisabled = attributeOptions.length <= 1 ? ' disabled' : '';
     const valueOptions = getEquipmentUpgradeValueOptions(def);
     return `
       <td><strong>${escapeHtml(def.targetLabel)}</strong><small>${escapeHtml(def.group)}</small></td>
-      <td><input data-array="equipmentUpgrades" data-index="${index}" data-field="targetName" value="${escapeHtml(normalized.targetName)}" placeholder="${escapeHtml(def.targetLabel)}名" /></td>
+      <td>${targetControl}</td>
       <td><select data-array="equipmentUpgrades" data-index="${index}" data-field="upgradeId">${createLabeledOptions(EQUIPMENT_UPGRADE_CATALOG.map((entry) => ({ value: entry.id, label: `${entry.group} / ${entry.name}` })), normalized.upgradeId)}</select></td>
       <td><select data-array="equipmentUpgrades" data-index="${index}" data-field="rank"${rankDisabled}>${createOptions(WEAPON_RANKS, normalized.rank)}</select></td>
       <td><select data-array="equipmentUpgrades" data-index="${index}" data-field="attribute"${attributeDisabled}>${createLabeledOptions(attributeOptions, normalized.attribute)}</select></td>
@@ -2580,7 +2746,7 @@ function normalizeEquipmentUpgradeRow(row) {
 }
 
 function getEquipmentUpgradeCost(row) {
-  const normalized = normalizeEquipmentUpgradeRow(row);
+  const normalized = syncEquipmentUpgradeTargetDefaults(row);
   const def = getEquipmentUpgradeDef(normalized.upgradeId);
   const value = int(normalized.value);
   if (def.costMode === 'rankPerAbsValue') {
@@ -2599,7 +2765,7 @@ function getEquipmentUpgradeCost(row) {
 }
 
 function equipmentUpgradeCostBreakdown(row) {
-  const normalized = normalizeEquipmentUpgradeRow(row);
+  const normalized = syncEquipmentUpgradeTargetDefaults(row);
   const def = getEquipmentUpgradeDef(normalized.upgradeId);
   const value = int(normalized.value);
   if (def.costMode === 'rankPerAbsValue') {
@@ -2652,7 +2818,7 @@ function formatEquipmentUpgradeEffect(row) {
 }
 
 function formatEquipmentUpgradeLine(row) {
-  const normalized = normalizeEquipmentUpgradeRow(row);
+  const normalized = syncEquipmentUpgradeTargetDefaults(row);
   const def = getEquipmentUpgradeDef(normalized.upgradeId);
   const targetName = normalized.targetName || '対象未設定';
   const attr = normalized.attribute ? ` / ${normalized.attribute}` : '';
@@ -2661,7 +2827,7 @@ function formatEquipmentUpgradeLine(row) {
 }
 
 function hasEquipmentUpgradeContent(row) {
-  const normalized = normalizeEquipmentUpgradeRow(row);
+  const normalized = syncEquipmentUpgradeTargetDefaults(row);
   return Boolean(normalized.targetName || normalized.memo || int(normalized.value) || getEquipmentUpgradeCost(normalized));
 }
 
@@ -3118,8 +3284,8 @@ function handleDynamicInput(event) {
   }
   target[index][field] = getInputValue(el);
   if (isTrackedEquipmentArray(arrayName)) ensurePurchaseMetadata(target[index], arrayName);
-  if (arrayName === 'equipmentUpgrades' && field === 'upgradeId') {
-    target[index] = normalizeEquipmentUpgradeRow(target[index]);
+  if (arrayName === 'equipmentUpgrades' && ['upgradeId', 'targetName', 'attribute', 'value'].includes(field)) {
+    target[index] = syncEquipmentUpgradeTargetDefaults(target[index]);
     renderDynamicTables();
   }
   updateAll(true);
@@ -3587,7 +3753,7 @@ function getTotals() {
   const consumedItemCost = Math.max(0, int(state.equipment.consumedItemCost));
   const prostheticCost = state.equipment.prosthetics.reduce((sum, row) => sum + int(row.cost), 0);
   const equipmentUpgradeCost = (state.equipment.upgrades || []).reduce((sum, row) => sum + getEquipmentUpgradeCost(row), 0);
-  const weaponWeight = state.equipment.weapons.reduce((sum, row) => sum + clampNumber(row.weight), 0);
+  const weaponWeight = state.equipment.weapons.reduce((sum, row) => sum + getEffectiveWeaponWeight(row), 0);
   const armorWeight = state.equipment.armors.reduce((sum, row) => sum + clampNumber(row.weight), 0);
   const itemWeight = state.equipment.items.reduce((sum, row) => sum + clampNumber(row.weight) * Math.max(1, int(row.qty, 1)), 0);
   const prostheticWeight = state.equipment.prosthetics.reduce((sum, row) => sum + clampNumber(row.weight), 0);
@@ -5642,7 +5808,7 @@ function buildSheetText() {
   const skillLeft = int(state.growth.skillPointStart) - totals.skillUsed;
   const statLine = STAT_KEYS.map((key) => `${key}:${d.stats[key]}(B${d.bonuses[key]})`).join(' / ');
   const conditionLine = buildConditionLine();
-  const weapons = state.equipment.weapons.filter((row) => row.name || row.memo).map((row) => `・${row.name || '無名武器'} [${row.rank}/${row.type}] 威力:${row.power || '-'} 命中:${row.hit || '-'} 重量:${row.weight || 0} ${row.memo || ''}`).join('\n') || '・なし';
+  const weapons = state.equipment.weapons.filter((row) => row.name || row.memo).map(formatWeaponLine).join('\n') || '・なし';
   const armors = state.equipment.armors.filter((row) => row.name || row.memo).map((row) => `・${row.name || '無名防具'} ${formatArmorResistanceLine(row)} 重量:${row.weight || 0} ${row.memo || ''}`).join('\n') || '・なし';
   const items = state.equipment.items.filter((row) => row.name || row.memo).map((row) => `・${row.name || '無名アイテム'} x${row.qty || 1} 重量:${row.weight || 0} 価格:${formatMoney(row.cost || 0)} ${row.memo || ''}`).join('\n') || '・なし';
   const prosthetics = state.equipment.prosthetics.filter((row) => row.name || row.memo).map((row) => formatProstheticLine(row)).join('\n') || '・なし';
@@ -5822,14 +5988,52 @@ function ccfoliaSignedTerm(value, fallback = 0) {
   return n >= 0 ? `+${n}` : String(n);
 }
 
+function getConditionalAttackHitBonus() {
+  return hasOfficialPassiveById('hot-blood', '熱血') && int(state.emotion.level, 1) >= 3 ? 1 : 0;
+}
+
+function getConditionalAttackDamageBonus() {
+  return getConditionalAttackHitBonus();
+}
+
+function getAttackTypesForWeapon(row) {
+  const weapon = normalizeWeaponRow(row);
+  const text = `${weapon.type} ${weapon.memo}`;
+  const types = [];
+  if (/斬|slash/i.test(text)) types.push('斬撃');
+  if (/貫|pierce/i.test(text)) types.push('貫通');
+  if (/打|blunt/i.test(text)) types.push('打撃');
+  return [...new Set(types)];
+}
+
+function getPassiveDamageBonusForAttackType(type) {
+  const map = {
+    '斬撃': ['slash-damage', '斬撃術'],
+    '貫通': ['pierce-damage', '貫通術'],
+    '打撃': ['blunt-damage', '打撃術']
+  };
+  const passive = map[type];
+  if (!passive) return 0;
+  return getHighestOfficialPassiveSl(passive[0], passive[1]);
+}
+
 function buildCcfoliaWeaponCommandLines() {
   return state.equipment.weapons
     .filter((row) => oneLine(row.name))
     .flatMap((row) => {
-      const name = oneLine(row.name);
+      const weapon = normalizeWeaponRow(row);
+      const name = oneLine(weapon.name);
+      const hitBonus = getEffectiveWeaponHit(weapon) + getConditionalAttackHitBonus();
+      const basePower = getEffectiveWeaponPower(weapon) + getConditionalAttackDamageBonus();
+      const attackTypes = getAttackTypesForWeapon(weapon);
+      const damageLines = (attackTypes.length ? attackTypes : ['']).map((type) => {
+        const typeBonus = getPassiveDamageBonusForAttackType(type);
+        const label = type && attackTypes.length > 1 ? `${name}/${type}` : name;
+        return `2d6${ccfoliaSignedTerm(basePower + typeBonus)}+{POWER} （${label}）ダメージ判定`;
+      });
       return [
-        `2d6${ccfoliaSignedTerm(row.hit)}+{HIT}+{POWER} （${name}）命中判定`,
-        `2d6${ccfoliaSignedTerm(row.power)}+{POWER} （${name}）ダメージ判定`
+        `2d6${ccfoliaSignedTerm(hitBonus)}+{HIT}+{POWER} （${name}）命中判定`,
+        ...damageLines
       ];
     });
 }
@@ -5886,7 +6090,7 @@ function buildTekeyInfo() {
   const statLine = STAT_KEYS.map((key) => `${key}:${d.stats[key]}(B${d.bonuses[key]})`).join(' / ');
   const weapons = state.equipment.weapons
     .filter((row) => row.name || row.memo)
-    .map((row) => `${row.name || '無名武器'}[${row.rank}/${row.type}] 威力:${row.power || '-'} 命中:${row.hit || '-'} ${oneLine(row.memo)}`)
+    .map((row) => oneLine(formatWeaponLine(row, { bullet: false })))
     .join(' / ') || 'なし';
   const armors = state.equipment.armors
     .filter((row) => row.name || row.memo)
@@ -6096,7 +6300,7 @@ function buildCcfoliaMemo() {
   const statLine = STAT_KEYS.map((key) => `${key}:${d.stats[key]}(B${d.bonuses[key]})`).join(' / ');
   const weapons = state.equipment.weapons
     .filter((row) => row.name || row.memo)
-    .map((row) => `・${row.name || '無名武器'} [${row.rank}/${row.type}] 威力:${row.power || '-'} 命中:${row.hit || '-'} 重量:${row.weight || 0} ${oneLine(row.memo)}`)
+    .map(formatWeaponLine)
     .join('\n') || '・なし';
   const armors = state.equipment.armors
     .filter(hasCcfoliaArmorMemoContent)
@@ -6245,7 +6449,7 @@ function buildTekeyPalette() {
   const statParams = STAT_KEYS.flatMap((key) => [`// ${key}=${d.stats[key]}`, `// ${key}B=${d.bonuses[key]}`]);
   const weapons = state.equipment.weapons
     .filter((row) => row.name || row.memo)
-    .map((row) => `${row.name || '無名武器'} | ${row.rank}/${row.type} | 威力:${row.power || '-'} | 命中:${row.hit || '-'} | ${oneLine(row.memo)}`)
+    .map((row) => oneLine(formatWeaponLine(row, { bullet: false })))
     .join('\n') || '武器未設定';
   const armors = state.equipment.armors
     .filter((row) => row.name || row.memo)

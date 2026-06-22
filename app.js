@@ -6351,8 +6351,11 @@ function buildCcfoliaMemo() {
     `技能点:${int(state.growth.skillPointStart)} / 使用:${totals.skillUsed} / 残:${skillLeft}`,
     `重量:${totals.totalWeight.toLocaleString('ja-JP')}/${d.maxWeight}（${getWeightPenalty(totals.totalWeight, d.maxWeight).label}）`,
     '',
-    '■耐性情報',
-    armorResistances,
+    '■戦闘技能',
+    combatSkills,
+    '',
+    '■戦術スキル',
+    tactics,
     '',
     '■各種パッシブ',
     `能力値補正:${formatSpecialtyMods(specialty)}`,
@@ -6361,11 +6364,8 @@ function buildCcfoliaMemo() {
     'その他パッシブ:',
     extraPassives,
     '',
-    '■戦術スキル',
-    tactics,
-    '',
-    '■戦闘技能',
-    combatSkills
+    '■耐性情報',
+    armorResistances
   ].join('\n');
 }
 function buildCcfoliaCommands() {

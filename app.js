@@ -4471,8 +4471,13 @@ async function migrateLegacyCharactersToCloud(options = {}) {
   return { migrated, failed };
 }
 
+function isEditingSubmittedCloudCharacter() {
+  return Boolean(state.meta?.cloudAdminEditing && state.meta?.cloudId);
+}
+
 function ensureActiveCloudCharacterAfterAuth() {
   if (!isCloudLoggedIn()) return;
+  if (isEditingSubmittedCloudCharacter()) return;
   const ownsCurrent = state.meta?.cloudId && cloudCharacters.some((row) => row.id === state.meta.cloudId);
   if (ownsCurrent) return;
   if (cloudCharacters.length) loadCloudCharacterRow(cloudCharacters[0], { preserveCloudId: true, notify: false });

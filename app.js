@@ -1364,6 +1364,9 @@ const WAREHOUSE_TO_ACTIVE = { warehouseWeapons: 'weapons', warehouseArmors: 'arm
 const SUPABASE_PROJECT_URL = 'https://ntjcjjlpgqghclikaays.supabase.co/rest/v1/';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_lMvvz60vjIWAZCPuNL5FDA_3JAj8V2q';
 const CLOUD_AUTO_SAVE_DELAY_MS = 1600;
+const CLOUD_OFFICE_TABLE = 'offices';
+const CLOUD_OFFICE_SYNC_DELAY_MS = 1800;
+const CLOUD_OFFICE_POLL_MS = 30000;
 
 const DEFAULT_STATE = {
   meta: { libraryId: '', librarySavedAt: '', cloudId: '', cloudSavedAt: '', cloudSubmitted: false, cloudSubmittedAt: '', cloudAdminEditing: false, cloudAdminOwnerId: '', cloudAdminOwnerName: '', importedFromShare: false, sharedBy: null, sharedAt: '' },
@@ -1402,7 +1405,7 @@ const DEFAULT_STATE = {
     ],
     passives: []
   },
-  office: { name: '', leader: '', level: 1, fame: 0, members: '', tactic1: '', tactic2: '', memo: '' },
+  office: { name: '', leader: '', level: 1, fame: 0, members: '', tactic1: '', tactic2: '', memo: '', cloudOfficeId: '', cloudOfficeOwnerId: '', cloudOfficeUpdatedAt: '' },
   tekey: {
     referenceUrl: '',
     imageUrl: '',
@@ -1440,6 +1443,13 @@ let cloudAdminView = 'visible';
 let cloudPostAuthPromise = null;
 let cloudDisplayNameDirty = false;
 let cloudDisplayNameUpdating = false;
+let cloudOffices = [];
+let cloudOfficeLoading = false;
+let cloudOfficeListOpen = false;
+let cloudOfficeLastError = '';
+let cloudOfficeSyncTimer = null;
+let cloudOfficeSyncInFlight = false;
+let cloudOfficePollTimer = null;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -2118,6 +2128,9 @@ function mergeDefaults(input) {
   if (merged.office) {
     merged.office.tactic1 = normalizeTacticValue(merged.office.tactic1);
     merged.office.tactic2 = normalizeTacticValue(merged.office.tactic2);
+    merged.office.cloudOfficeId = oneLine(merged.office.cloudOfficeId);
+    merged.office.cloudOfficeOwnerId = oneLine(merged.office.cloudOfficeOwnerId);
+    merged.office.cloudOfficeUpdatedAt = oneLine(merged.office.cloudOfficeUpdatedAt);
   }
   return merged;
 }
@@ -3515,6 +3528,7 @@ function applyRewards() {
   populateStateToDom();
   saveState();
   scheduleCloudAutoSync();
+  if (officeFame) scheduleCloudOfficeSync({ delay: 200 });
   toast(`報酬を適用しました（アイテム${rewardItems.length}件）`);
 }
 
@@ -4490,6 +4504,11 @@ async function handleCloudAuthenticated(options = {}) {
       cloudProfile = null;
       cloudCharacters = [];
       cloudAdminCharacters = [];
+      cloudOffices = [];
+      cloudOfficeListOpen = false;
+      cloudOfficeLastError = '';
+      clearTimeout(cloudOfficePollTimer);
+      clearTimeout(cloudOfficeSyncTimer);
       cloudLastError = '';
       updateCloudUi();
       return;
@@ -4500,6 +4519,10 @@ async function handleCloudAuthenticated(options = {}) {
     await submitOwnCloudCharacters({ silent: options.silent !== false });
     await refreshCloudData({ silent: true });
     ensureActiveCloudCharacterAfterAuth();
+    if (state.office?.cloudOfficeId) {
+      await syncCurrentCloudOffice({ pushLocalFame: true, applyRemoteFields: true, render: false, persist: true, silent: true });
+      restartCloudOfficePolling();
+    }
     if (canAutoCloudSync()) scheduleCloudAutoSync();
     updateCloudUi();
   })().finally(() => {
@@ -4701,6 +4724,7 @@ function updateCloudUi() {
   renderCloudSaveStatus();
   renderCloudCharacterList();
   renderCloudAdminCharacterList();
+  renderCloudOfficeUi();
 }
 
 function renderCloudSaveStatus() {
@@ -4879,6 +4903,11 @@ async function refreshCloudData(options = {}) {
     cloudProfile = null;
     cloudCharacters = [];
     cloudAdminCharacters = [];
+    cloudOffices = [];
+    cloudOfficeListOpen = false;
+    cloudOfficeLastError = '';
+    clearTimeout(cloudOfficePollTimer);
+    clearTimeout(cloudOfficeSyncTimer);
     cloudLastError = '';
     updateCloudUi();
     return;
@@ -4889,6 +4918,8 @@ async function refreshCloudData(options = {}) {
     cloudLastError = '';
     await loadCloudProfile({ render: false });
     await loadCloudCharacters({ render: false });
+    await loadCloudOffices({ render: false, silent: true });
+    if (state.office?.cloudOfficeId) await syncCurrentCloudOffice({ pushLocalFame: true, applyRemoteFields: true, render: false, persist: true, silent: true });
     if (isCloudAdmin()) await loadCloudAdminCharacters({ render: false });
     else cloudAdminCharacters = [];
   } catch (error) {
@@ -4956,6 +4987,400 @@ async function loadCloudAdminCharacters(options = {}) {
   pruneAdminHiddenIds();
   if (options.render !== false) updateCloudUi();
   return cloudAdminCharacters;
+}
+
+function normalizeCloudOfficeRow(row = {}) {
+  const source = row && typeof row === 'object' ? row : {};
+  return {
+    id: oneLine(source.id),
+    owner_id: oneLine(source.owner_id),
+    name: oneLine(source.name),
+    leader: oneLine(source.leader),
+    members: String(source.members || ''),
+    memo: String(source.memo || ''),
+    tactic1: normalizeTacticValue(source.tactic1),
+    tactic2: normalizeTacticValue(source.tactic2),
+    fame: Math.max(0, int(source.fame)),
+    created_at: source.created_at || '',
+    updated_at: source.updated_at || ''
+  };
+}
+
+function getCurrentCharacterNameForOffice() {
+  return oneLine(state.profile?.characterName) || oneLine($('#librarySaveName')?.value) || '';
+}
+
+function splitOfficeMembers(value) {
+  return String(value || '')
+    .split(/[\n\r、,]+/)
+    .map(oneLine)
+    .filter(Boolean);
+}
+
+function formatOfficeMembers(members) {
+  return Array.from(new Set((members || []).map(oneLine).filter(Boolean))).join('\n');
+}
+
+function normalizeOfficeMembersText(value) {
+  return formatOfficeMembers(splitOfficeMembers(value));
+}
+
+function ensureOfficeMemberText(value, characterName) {
+  const members = splitOfficeMembers(value);
+  const name = oneLine(characterName);
+  if (name && !members.includes(name)) members.push(name);
+  return formatOfficeMembers(members);
+}
+
+function getCloudOfficeSelectColumns() {
+  return 'id, owner_id, name, leader, members, memo, tactic1, tactic2, fame, created_at, updated_at';
+}
+
+function findCloudOfficeById(officeId) {
+  return cloudOffices.find((row) => row.id === officeId) || null;
+}
+
+async function fetchCloudOfficeRow(officeId) {
+  const client = getCloudClient();
+  if (!client || !officeId) return null;
+  const { data, error } = await client
+    .from(CLOUD_OFFICE_TABLE)
+    .select(getCloudOfficeSelectColumns())
+    .eq('id', officeId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? normalizeCloudOfficeRow(data) : null;
+}
+
+function buildCloudOfficePayload(options = {}) {
+  const now = options.updatedAt || new Date().toISOString();
+  const fame = options.fame !== undefined ? options.fame : state.office.fame;
+  const members = options.members !== undefined ? options.members : state.office.members;
+  const leader = options.leader !== undefined ? options.leader : state.office.leader;
+  return {
+    name: oneLine(state.office.name) || '無名事務所',
+    leader: oneLine(leader),
+    members: normalizeOfficeMembersText(members),
+    memo: String(state.office.memo || ''),
+    tactic1: normalizeTacticValue(state.office.tactic1),
+    tactic2: normalizeTacticValue(state.office.tactic2),
+    fame: Math.max(0, int(fame)),
+    updated_at: now
+  };
+}
+
+function applyCloudOfficeToState(row, options = {}) {
+  const office = normalizeCloudOfficeRow(row);
+  if (!office.id) return null;
+  const nextFame = options.preserveHigherLocalFame === false
+    ? office.fame
+    : Math.max(Math.max(0, int(state.office?.fame)), office.fame);
+  state.office = {
+    ...(state.office || {}),
+    name: office.name,
+    leader: office.leader,
+    members: office.members,
+    memo: office.memo,
+    tactic1: office.tactic1,
+    tactic2: office.tactic2,
+    fame: nextFame,
+    level: getOfficeLevelInfo(nextFame).level,
+    cloudOfficeId: office.id,
+    cloudOfficeOwnerId: office.owner_id,
+    cloudOfficeUpdatedAt: office.updated_at
+  };
+  if (options.render !== false) populateStateToDom();
+  else updateOfficeLevelDisplay(syncOfficeLevel());
+  if (options.persist) {
+    saveState();
+    scheduleCloudAutoSync();
+  }
+  renderCloudOfficeUi();
+  return office;
+}
+
+async function loadCloudOffices(options = {}) {
+  const client = getCloudClient();
+  if (!client || !isCloudLoggedIn()) {
+    cloudOffices = [];
+    if (options.render !== false) renderCloudOfficeUi();
+    return [];
+  }
+  cloudOfficeLoading = true;
+  if (options.render !== false) renderCloudOfficeUi();
+  try {
+    const { data, error } = await client
+      .from(CLOUD_OFFICE_TABLE)
+      .select(getCloudOfficeSelectColumns())
+      .order('updated_at', { ascending: false });
+    if (error) throw error;
+    cloudOffices = (Array.isArray(data) ? data : []).map(normalizeCloudOfficeRow);
+    cloudOfficeLastError = '';
+  } catch (error) {
+    console.error(error);
+    cloudOffices = [];
+    cloudOfficeLastError = formatCloudError(error);
+    if (!options.silent) toast('事務所一覧の読み込みに失敗しました');
+  } finally {
+    cloudOfficeLoading = false;
+    if (options.render !== false) renderCloudOfficeUi();
+  }
+  return cloudOffices;
+}
+
+function formatCloudOfficeTactics(office) {
+  const values = [office.tactic1, office.tactic2].filter(Boolean);
+  return values.length ? formatTacticList(values, formatTacticSelection, ' / ') : '未設定';
+}
+
+function renderCloudOfficeCard(row) {
+  const office = normalizeCloudOfficeRow(row);
+  const info = getOfficeLevelInfo(office.fame);
+  const memberCount = splitOfficeMembers(office.members).length;
+  const activeLabel = state.office?.cloudOfficeId === office.id ? '<span>参加中</span>' : '';
+  const dateLabel = office.updated_at ? `更新: ${formatDateTime(office.updated_at)}` : '更新: -';
+  return `
+    <article class="character-card">
+      <div class="character-card-header">
+        <div>
+          <h3>${escapeHtml(office.name || '無名事務所')}</h3>
+          <p>${escapeHtml(office.memo || 'メモなし')}</p>
+        </div>
+        <div class="character-meta">${activeLabel}<span>${escapeHtml(dateLabel)}</span></div>
+      </div>
+      <div class="character-meta">
+        <span>代表: ${escapeHtml(office.leader || '-')}</span>
+        <span>事務所Lv${info.level}</span>
+        <span>名声 ${office.fame.toLocaleString('ja-JP')}</span>
+        <span>所属 ${memberCount}人</span>
+        <span>戦術: ${escapeHtml(formatCloudOfficeTactics(office))}</span>
+      </div>
+      <div class="character-card-actions">
+        <button type="button" class="primary small" data-cloud-office-action="join" data-cloud-office-id="${escapeHtml(office.id)}">${state.office?.cloudOfficeId === office.id ? '同期する' : '参加する'}</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderCloudOfficeUi() {
+  const status = $('#cloudOfficeStatus');
+  const list = $('#cloudOfficeList');
+  const createButton = $('#createCloudOffice');
+  const joinButton = $('#joinCloudOffice');
+  const client = getCloudClient();
+  const loggedIn = isCloudLoggedIn();
+  const canUse = Boolean(client && loggedIn && !cloudBusy && !cloudOfficeLoading);
+  if (createButton) createButton.disabled = !canUse;
+  if (joinButton) joinButton.disabled = !canUse;
+  if (status) {
+    if (!client) status.textContent = 'クラウド接続を初期化できませんでした。';
+    else if (!loggedIn) status.textContent = 'ログインすると事務所をクラウド共有できます。';
+    else if (cloudOfficeLastError) status.textContent = `事務所クラウドエラー: ${cloudOfficeLastError}`;
+    else if (state.office?.cloudOfficeId) {
+      const ownerLabel = state.office.cloudOfficeOwnerId === getCloudUser()?.id ? '作成済みの事務所' : '参加中の事務所';
+      status.textContent = `${ownerLabel}: ${state.office.name || '名称未設定'} / 名声${int(state.office.fame).toLocaleString('ja-JP')} / 事務所Lv${getOfficeLevelInfo(state.office.fame).level}`;
+    }
+    else status.textContent = '事務所を作成するか、一覧から参加できます。';
+  }
+  if (!list) return;
+  list.hidden = !cloudOfficeListOpen;
+  if (!cloudOfficeListOpen) return;
+  if (!client) {
+    list.innerHTML = '<div class="character-empty">クラウド接続を初期化できませんでした。</div>';
+    return;
+  }
+  if (!loggedIn) {
+    list.innerHTML = '<div class="character-empty">ログインすると事務所一覧を確認できます。</div>';
+    return;
+  }
+  if (cloudOfficeLoading) {
+    list.innerHTML = '<div class="character-empty">事務所一覧を読み込み中です。</div>';
+    return;
+  }
+  if (cloudOfficeLastError) {
+    list.innerHTML = `<div class="character-empty">事務所一覧の読み込みに失敗しました。Supabaseに ${escapeHtml(CLOUD_OFFICE_TABLE)} テーブルがあるか確認してください。<br>${escapeHtml(cloudOfficeLastError)}</div>`;
+    return;
+  }
+  if (!cloudOffices.length) {
+    list.innerHTML = '<div class="character-empty">まだクラウド共有された事務所はありません。</div>';
+    return;
+  }
+  list.innerHTML = cloudOffices.map(renderCloudOfficeCard).join('');
+}
+
+async function createOrUpdateCloudOffice() {
+  const client = getCloudClient();
+  const user = getCloudUser();
+  if (!client || !user) {
+    activateTab('library');
+    toast('先にクラウドログインしてください');
+    return;
+  }
+  collectBoundInputs();
+  const characterName = getCurrentCharacterNameForOffice();
+  if (!characterName) {
+    toast('先にキャラクター名を入力してください');
+    return;
+  }
+  if (!oneLine(state.office.name)) {
+    toast('事務所名を入力してください');
+    return;
+  }
+  setCloudBusy(true);
+  try {
+    const currentRemote = state.office.cloudOfficeId ? await fetchCloudOfficeRow(state.office.cloudOfficeId) : null;
+    const canUpdateCurrentOffice = Boolean(currentRemote && currentRemote.owner_id === user.id);
+    const now = new Date().toISOString();
+    const members = ensureOfficeMemberText(canUpdateCurrentOffice ? state.office.members : '', characterName);
+    const nextFame = Math.max(Math.max(0, int(state.office.fame)), canUpdateCurrentOffice ? Math.max(0, int(currentRemote?.fame)) : 0);
+    const payload = buildCloudOfficePayload({ leader: characterName, members, fame: nextFame, updatedAt: now });
+    const query = canUpdateCurrentOffice
+      ? client.from(CLOUD_OFFICE_TABLE).update(payload).eq('id', currentRemote.id)
+      : client.from(CLOUD_OFFICE_TABLE).insert({ ...payload, owner_id: user.id });
+    const { data, error } = await query.select(getCloudOfficeSelectColumns()).single();
+    if (error) throw error;
+    applyCloudOfficeToState(data, { preserveHigherLocalFame: true, persist: true });
+    await loadCloudOffices({ render: false, silent: true });
+    cloudOfficeListOpen = true;
+    restartCloudOfficePolling();
+    renderCloudOfficeUi();
+    toast('事務所をクラウド保存しました');
+  } catch (error) {
+    console.error(error);
+    cloudOfficeLastError = formatCloudError(error);
+    renderCloudOfficeUi();
+    toast('事務所のクラウド保存に失敗しました');
+  } finally {
+    setCloudBusy(false);
+  }
+}
+
+async function openCloudOfficeList() {
+  if (!getCloudClient() || !isCloudLoggedIn()) {
+    activateTab('library');
+    toast('先にクラウドログインしてください');
+    return;
+  }
+  cloudOfficeListOpen = true;
+  renderCloudOfficeUi();
+  await loadCloudOffices({ silent: false });
+}
+
+async function joinCloudOffice(officeId) {
+  const client = getCloudClient();
+  if (!client || !isCloudLoggedIn()) {
+    activateTab('library');
+    toast('先にクラウドログインしてください');
+    return;
+  }
+  const characterName = getCurrentCharacterNameForOffice();
+  if (!characterName) {
+    toast('先にキャラクター名を入力してください');
+    return;
+  }
+  setCloudBusy(true);
+  try {
+    let office = findCloudOfficeById(officeId) || await fetchCloudOfficeRow(officeId);
+    if (!office) {
+      toast('事務所が見つかりません');
+      return;
+    }
+    const now = new Date().toISOString();
+    const members = ensureOfficeMemberText(office.members, characterName);
+    const nextFame = Math.max(Math.max(0, int(state.office.fame)), office.fame);
+    const { data, error } = await client
+      .from(CLOUD_OFFICE_TABLE)
+      .update({ members, fame: nextFame, updated_at: now })
+      .eq('id', office.id)
+      .select(getCloudOfficeSelectColumns())
+      .single();
+    if (error) throw error;
+    office = applyCloudOfficeToState(data, { preserveHigherLocalFame: true, persist: true });
+    await loadCloudOffices({ render: false, silent: true });
+    cloudOfficeListOpen = true;
+    restartCloudOfficePolling();
+    renderCloudOfficeUi();
+    toast(`${office?.name || '事務所'}に参加しました`);
+  } catch (error) {
+    console.error(error);
+    cloudOfficeLastError = formatCloudError(error);
+    renderCloudOfficeUi();
+    toast('事務所への参加に失敗しました');
+  } finally {
+    setCloudBusy(false);
+  }
+}
+
+async function syncCurrentCloudOffice(options = {}) {
+  const client = getCloudClient();
+  const officeId = state.office?.cloudOfficeId;
+  if (!client || !isCloudLoggedIn() || !officeId) return null;
+  if (cloudOfficeSyncInFlight) return null;
+  cloudOfficeSyncInFlight = true;
+  try {
+    let office = await fetchCloudOfficeRow(officeId);
+    if (!office) return null;
+    const localFame = Math.max(0, int(state.office.fame));
+    if (options.pushLocalFame && localFame > office.fame) {
+      const now = new Date().toISOString();
+      const { data, error } = await client
+        .from(CLOUD_OFFICE_TABLE)
+        .update({ fame: localFame, updated_at: now })
+        .eq('id', office.id)
+        .select(getCloudOfficeSelectColumns())
+        .single();
+      if (error) throw error;
+      office = normalizeCloudOfficeRow(data);
+    }
+    if (options.applyRemoteFields !== false) {
+      applyCloudOfficeToState(office, { preserveHigherLocalFame: true, render: options.render !== false, persist: Boolean(options.persist) });
+    } else {
+      const nextFame = Math.max(localFame, office.fame);
+      state.office.fame = nextFame;
+      state.office.level = getOfficeLevelInfo(nextFame).level;
+      state.office.cloudOfficeUpdatedAt = office.updated_at;
+      updateOfficeLevelDisplay(syncOfficeLevel());
+      if (options.persist) {
+        saveState();
+        scheduleCloudAutoSync();
+      }
+      renderCloudOfficeUi();
+    }
+    cloudOfficeLastError = '';
+    return office;
+  } catch (error) {
+    console.error(error);
+    cloudOfficeLastError = formatCloudError(error);
+    if (!options.silent) toast('事務所の同期に失敗しました');
+    renderCloudOfficeUi();
+    return null;
+  } finally {
+    cloudOfficeSyncInFlight = false;
+  }
+}
+
+function scheduleCloudOfficeSync(options = {}) {
+  if (!state.office?.cloudOfficeId || !getCloudClient() || !isCloudLoggedIn()) return;
+  clearTimeout(cloudOfficeSyncTimer);
+  cloudOfficeSyncTimer = setTimeout(() => {
+    void syncCurrentCloudOffice({ pushLocalFame: true, applyRemoteFields: false, render: false, persist: true, silent: true });
+  }, options.delay ?? CLOUD_OFFICE_SYNC_DELAY_MS);
+}
+
+function restartCloudOfficePolling() {
+  clearTimeout(cloudOfficePollTimer);
+  if (!state.office?.cloudOfficeId || !getCloudClient() || !isCloudLoggedIn()) return;
+  cloudOfficePollTimer = setTimeout(async () => {
+    await syncCurrentCloudOffice({ pushLocalFame: true, applyRemoteFields: true, render: true, persist: true, silent: true });
+    restartCloudOfficePolling();
+  }, CLOUD_OFFICE_POLL_MS);
+}
+
+function handleCloudOfficeListAction(event) {
+  const button = event.target.closest('[data-cloud-office-action]');
+  if (!button) return;
+  const officeId = button.dataset.cloudOfficeId;
+  if (button.dataset.cloudOfficeAction === 'join') void joinCloudOffice(officeId);
 }
 
 async function signUpCloudAccount(source = 'library') {
@@ -5095,8 +5520,13 @@ async function logoutCloudAccount() {
     cloudProfile = null;
     cloudCharacters = [];
     cloudAdminCharacters = [];
+    cloudOffices = [];
+    cloudOfficeListOpen = false;
+    cloudOfficeLastError = '';
     cloudLastError = '';
     cloudLastAutoSaveSnapshot = '';
+    clearTimeout(cloudOfficePollTimer);
+    clearTimeout(cloudOfficeSyncTimer);
     updateCloudUi();
     toast('クラウドログアウトしました');
   } catch (error) {
@@ -5215,6 +5645,10 @@ function loadCloudCharacterRow(row, options = {}) {
   if (memoInput) memoInput.value = row.memo || '';
   populateStateToDom();
   saveState();
+  if (state.office?.cloudOfficeId) {
+    void syncCurrentCloudOffice({ pushLocalFame: true, applyRemoteFields: true, render: true, persist: true, silent: true });
+    restartCloudOfficePolling();
+  }
   activateTab('basic');
   if (notify) toast(adminEditing ? `${row.name || state.profile.characterName || 'キャラクター'}を管理者編集用に読み込みました` : `${row.name || state.profile.characterName || 'キャラクター'}を読み込みました`);
 }
@@ -6713,6 +7147,7 @@ function scheduleSave() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveState, 350);
   scheduleCloudAutoSync();
+  scheduleCloudOfficeSync();
 }
 
 function saveState() {
@@ -6830,6 +7265,18 @@ function hookEvents() {
   $('#randomSeed').addEventListener('click', randomSeed);
   $('#rollFixerHistory').addEventListener('click', rollFixerHistory);
   $('#resetSheet').addEventListener('click', resetSheet);
+  const createCloudOfficeButton = $('#createCloudOffice');
+  if (createCloudOfficeButton) createCloudOfficeButton.addEventListener('click', () => void createOrUpdateCloudOffice());
+  const joinCloudOfficeButton = $('#joinCloudOffice');
+  if (joinCloudOfficeButton) joinCloudOfficeButton.addEventListener('click', () => void openCloudOfficeList());
+  const cloudOfficeList = $('#cloudOfficeList');
+  if (cloudOfficeList) cloudOfficeList.addEventListener('click', handleCloudOfficeListAction);
+  window.addEventListener('focus', () => {
+    if (state.office?.cloudOfficeId) void syncCurrentCloudOffice({ pushLocalFame: true, applyRemoteFields: true, render: true, persist: true, silent: true });
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && state.office?.cloudOfficeId) void syncCurrentCloudOffice({ pushLocalFame: true, applyRemoteFields: true, render: true, persist: true, silent: true });
+  });
   const saveNowButton = $('#saveNow');
   if (saveNowButton) saveNowButton.addEventListener('click', () => void saveCurrentCharacterToCloud({ submit: true }));
   $('#openLibrary').addEventListener('click', () => activateTab('library'));
